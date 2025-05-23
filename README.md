@@ -25,6 +25,7 @@ This will put `jb` in `$(go env GOPATH)/bin`. If you encounter the error
 
 - Fetches transitive dependencies
 - Can vendor subtrees, as opposed to whole repositories
+- Parallel package downloads for faster dependency resolution (enable with `JB_PARALLEL_DOWNLOADS=true`)
 
 
 ## Current Limitations
@@ -63,6 +64,11 @@ You can control the cache with various options:
   ```bash
   export JB_CACHE_DIR="/custom/path/to/cache"
   jb update
+  ```
+- Enable parallel package downloads by setting the `JB_PARALLEL_DOWNLOADS` environment variable:
+  ```bash
+  export JB_PARALLEL_DOWNLOADS=true
+  jb install
   ```
 
 ### Cache Commands
