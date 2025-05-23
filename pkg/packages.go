@@ -80,6 +80,9 @@ func Ensure(direct v1.JsonnetFile, vendorDir string, oldLocks *deps.Ordered) (*d
 		names = append(names, path)
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 
 	// remove them
 	for _, dir := range names {
@@ -211,7 +214,6 @@ func checkLegacyNameTaken(legacyName string, pkgName string) (bool, error) {
 
 func known(deps *deps.Ordered, p string) bool {
 	p = filepath.ToSlash(p)
-
 
 	for _, kd := range deps.Keys() {
 		d, _ := deps.Get(kd)

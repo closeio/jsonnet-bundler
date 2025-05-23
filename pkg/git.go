@@ -734,99 +734,6 @@ func registerInGlobalCacheIndex(filePath, url string) {
 	}
 }
 
-// getGlobalRemoteCaches has been removed as it duplicated the cache.GetGlobalRemoteCaches function.
-
-// populateRemoteS3Caches uploads a file to all configured S3 remote caches
-func populateRemoteS3Caches(remoteCaches []string, filePath, cacheKey string) {
-	// Get file stats for verification
-	fileInfo, err := os.Stat(filePath)
-	if err != nil {
-		if !GitQuiet {
-			color.Yellow("WARNING: Failed to get file info for S3 upload: %v", err)
-		}
-		return
-	}
-
-	// Skip directories
-	if fileInfo.IsDir() {
-		if !GitQuiet {
-			color.Yellow("WARNING: Cannot upload directory to S3 cache: %s", filePath)
-		}
-		return
-	}
-
-	// Format the S3 key
-	s3Key := cacheKey + ".tar.gz"
-
-	// Loop through remote caches
-	for _, remoteURL := range remoteCaches {
-		// Skip non-S3 remotes
-		if !strings.HasPrefix(remoteURL, "s3://") {
-			continue
-		}
-
-		if !GitQuiet {
-			color.Green("Uploading to S3 remote cache: %s/%s", remoteURL, s3Key)
-		}
-
-		// Extract bucket from S3 URL
-		parsedURL, parseErr := url.Parse(remoteURL)
-		if parseErr != nil {
-			if !GitQuiet {
-				color.Yellow("WARNING: Failed to parse S3 URL %s: %v", remoteURL, parseErr)
-			}
-			continue
-		}
-
-		// Get bucket name from URL host
-		bucket := parsedURL.Host
-
-		// Create S3 client using environment variables
-		client, err := s3.NewClientFromEnv(bucket)
-		if err != nil {
-			if !GitQuiet {
-				color.Yellow("WARNING: Failed to create S3 client for %s: %v", remoteURL, err)
-				color.Yellow("S3 URL details - Bucket: %s, Query params: %s",
-					bucket, parsedURL.RawQuery)
-			}
-			continue
-		}
-
-		// Check if bucket exists and is accessible before attempting upload
-		ctx := context.Background()
-		exists, err := client.BucketExists(ctx)
-		if err != nil {
-			if !GitQuiet {
-				color.Yellow("WARNING: Failed to check if bucket exists: %v", err)
-			}
-			continue
-		}
-
-		if !exists {
-			if !GitQuiet {
-				color.Yellow("WARNING: Bucket '%s' does not exist or is not accessible", client.Bucket)
-			}
-			continue
-		}
-
-		// Upload the file
-		err = client.Upload(ctx, filePath, s3Key)
-		if err != nil {
-			if !GitQuiet {
-				color.Yellow("WARNING: Failed to upload to S3 cache %s: %v", remoteURL, err)
-
-				// Add AWS SDK version for debugging
-				color.Yellow("Using AWS SDK v2 - Check if credentials and endpoint are correctly configured")
-			}
-			continue
-		}
-
-		if !GitQuiet {
-			color.Green("Successfully populated S3 remote cache: %s", remoteURL)
-		}
-	}
-}
-
 func gzipUntar(dst string, r io.Reader, subDir string) error {
 	gzr, err := gzip.NewReader(r)
 	if err != nil {
@@ -927,7 +834,7 @@ func remoteResolveRef(ctx context.Context, remote string, ref string) (string, e
 	if err != nil {
 		return "", err
 	}
-	commitShaPattern := regexp.MustCompile("^([0-9a-f]{40,})\\b")
+	commitShaPattern := regexp.MustCompile(`^([0-9a-f]{40,})\b`)
 	commitSha := commitShaPattern.FindString(b.String())
 	return commitSha, nil
 }
