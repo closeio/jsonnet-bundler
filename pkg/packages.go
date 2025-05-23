@@ -52,7 +52,14 @@ var (
 func Ensure(direct v1.JsonnetFile, vendorDir string, oldLocks *deps.Ordered) (*deps.Ordered, error) {
 	// ensure all required files are in vendor
 	// This is the actual installation
-	locks, err := ensure(direct.Dependencies, vendorDir, "", oldLocks)
+	// Use parallel downloads if enabled via environment variable
+	var locks *deps.Ordered
+	var err error
+	if os.Getenv("JB_PARALLEL_DOWNLOADS") == "true" {
+		locks, err = parallelEnsure(direct.Dependencies, vendorDir, "", oldLocks)
+	} else {
+		locks, err = ensure(direct.Dependencies, vendorDir, "", oldLocks)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -204,6 +211,8 @@ func checkLegacyNameTaken(legacyName string, pkgName string) (bool, error) {
 
 func known(deps *deps.Ordered, p string) bool {
 	p = filepath.ToSlash(p)
+
+
 	for _, kd := range deps.Keys() {
 		d, _ := deps.Get(kd)
 		k := filepath.ToSlash(d.Name())

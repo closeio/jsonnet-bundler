@@ -17,8 +17,6 @@
 package rewrite
 
 import (
-	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -76,18 +74,14 @@ func Rewrite(dir, vendorDir string, packages *deps.Ordered) error {
 	return nil
 }
 
-func wrap(s, q string) string {
-	return fmt.Sprintf(`import %s%s`, q, s)
-}
-
 func replaceFile(name string, imports map[string]string) error {
-	raw, err := ioutil.ReadFile(name)
+	raw, err := os.ReadFile(name)
 	if err != nil {
 		return err
 	}
 
 	out := replace(string(raw), imports)
-	return ioutil.WriteFile(name, out, 0644)
+	return os.WriteFile(name, out, 0644)
 }
 
 func replace(data string, imports map[string]string) []byte {

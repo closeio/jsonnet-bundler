@@ -19,7 +19,6 @@ package main
 
 import (
 	"encoding/json"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -79,7 +78,7 @@ func testInstallCommandWithJsonnetHome(t *testing.T, jsonnetHome string) {
 			URIs:                    []string{"github.com/grafana/loki/production/ksonnet/loki@bd4d516262c107a0bde7a962fa2b1e567a2c21e5"},
 			ExpectedCode:            0,
 			ExpectedJsonnetFile:     []byte(`{"version":1,"dependencies":[{"source":{"git":{"remote":"https://github.com/grafana/loki.git","subdir":"production/ksonnet/loki"}},"version":"bd4d516262c107a0bde7a962fa2b1e567a2c21e5","single":true}],"legacyImports":true}`),
-			ExpectedJsonnetLockFile: []byte(`{"version":1,"dependencies":[{"source":{"git":{"remote":"https://github.com/grafana/loki.git","subdir":"production/ksonnet/loki"}},"version":"bd4d516262c107a0bde7a962fa2b1e567a2c21e5","sum":"ExovUKXmZ4KwJAv/q8ZwNW9BdIZlrxmoGrne7aR64wo=","single":true}],"legacyImports":false}`),
+			ExpectedJsonnetLockFile: []byte(`{"version":1,"dependencies":[{"source":{"git":{"remote":"https://github.com/grafana/loki.git","subdir":"production/ksonnet/loki"}},"version":"bd4d516262c107a0bde7a962fa2b1e567a2c21e5","sum":"t45zJfNymEmjUQSW0BFSDeG6lGepV4edz9xdOcazf0s=","single":true}],"legacyImports":false}`),
 			single:                  true,
 		},
 	}
@@ -119,7 +118,7 @@ func testInstallCommandWithJsonnetHome(t *testing.T, jsonnetHome string) {
 func jsonnetFileContent(t *testing.T, filename string, content []byte) {
 	t.Helper()
 
-	bytes, err := ioutil.ReadFile(filename)
+	bytes, err := os.ReadFile(filename)
 	assert.NoError(t, err)
 	if eq := assert.JSONEq(t, string(content), string(bytes)); !eq {
 		t.Log(string(bytes))

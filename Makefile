@@ -26,7 +26,7 @@ static:
 	CGO_ENABLED=0 go build -ldflags=${LDFLAGS} -o $(OUT_DIR)/$(BIN) ./cmd/$(BIN)
 
 build:
-	CGO_ENABLED=0 go build -o $(OUT_DIR)/$(BIN) ./cmd/$(BIN)
+	CGO_ENABLED=0 go build -ldflags='-X main.Version=${VERSION}' -o $(OUT_DIR)/$(BIN) ./cmd/$(BIN)
 
 install: static
 	@echo ">> copying $(BIN) into $(GOPATH)/bin/$(BIN)"

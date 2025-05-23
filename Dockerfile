@@ -1,4 +1,4 @@
-FROM busybox:1.35.0
+FROM busybox:1.37.0
 
 COPY _output/linux/amd64/jb /
 

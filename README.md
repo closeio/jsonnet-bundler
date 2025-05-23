@@ -29,9 +29,89 @@ This will put `jb` in `$(go env GOPATH)/bin`. If you encounter the error
 
 ## Current Limitations
 
-- Always downloads entire dependent repositories, even when updating
 - If two dependencies depend on the same package (diamond problem), they must require the same version
 
+## Caching
+
+jsonnet-bundler uses a sophisticated caching system with concurrent lookups for optimal performance:
+
+1. **Global Cache**: Located in `~/.cache/jb` by default. This cache is shared between all projects on your system and persists between different runs. The global cache includes:
+   - Downloaded GitHub archives
+   - Git repositories
+
+2. **Remote Caches**: Optional HTTP/HTTPS or S3 servers that can provide cached dependencies to multiple developers or build environments. Supports:
+   - HTTP/HTTPS servers
+   - Amazon S3 buckets with the format `s3://bucket-name/path`
+
+**Performance Optimizations**:
+- **Concurrent Lookups**: Uses goroutines to check multiple cache sources simultaneously
+  - All cache lookups happen in parallel to minimize wait time
+  - Remote requests are made concurrently with timeout controls
+  - Results are processed in priority order
+
+The caching system keeps track of metadata including:
+- File size and creation time
+- Last access time for expiration calculation
+- Source information and content hash
+
+### Cache Options
+
+You can control the cache with various options:
+
+- Disable global caching with the `--no-global-cache` flag
+- Change the global cache location by setting the `JB_CACHE_DIR` environment variable:
+  ```bash
+  export JB_CACHE_DIR="/custom/path/to/cache"
+  jb update
+  ```
+
+### Cache Commands
+
+jsonnet-bundler provides several subcommands under the `cache` command:
+
+```
+jb cache status                   # Show cache status (size, entries, etc.)
+jb cache add-remote URL           # Add a remote cache server
+jb cache list-remote              # List configured remote cache servers
+jb cache remove-remote URL        # Remove a remote cache server
+jb cache list                     # List all cache entries
+```
+
+#### Cache Management
+
+The cache is automatically managed. Dependencies are cached globally and can be shared through remote cache servers.
+
+#### Remote Cache Sharing
+
+You can share caches between team members or CI systems:
+
+##### HTTP Remote Cache
+
+```bash
+# Add an HTTP remote cache server
+jb cache add-remote https://cache.example.com/jsonnet
+
+# List cache entries in JSON format
+jb cache list --json
+```
+
+##### S3 Remote Cache
+
+```bash
+# Configure AWS credentials (if not using instance profiles or other methods)
+export AWS_ACCESS_KEY_ID=your_access_key
+export AWS_SECRET_ACCESS_KEY=your_secret_key
+export AWS_REGION=us-west-2  # Optional, defaults to us-east-1
+
+# Add an S3 remote cache
+jb cache add-remote s3://my-jsonnet-cache-bucket/jsonnet
+
+# List configured remote caches
+jb cache list-remote
+
+# Remove a remote cache when no longer needed
+jb cache remove-remote s3://my-jsonnet-cache-bucket/jsonnet
+```
 
 ## Example Usage
 
@@ -93,12 +173,13 @@ usage: jb [<flags>] <command> [<args> ...]
 A jsonnet package manager
 
 Flags:
-  -h, --help     Show context-sensitive help (also try --help-long and
-                 --help-man).
-      --version  Show application version.
-      --jsonnetpkg-home="vendor"  
-                 The directory used to cache packages in.
-  -q, --quiet    Suppress any output from git command.
+  -h, --help             Show context-sensitive help (also try --help-long and
+                         --help-man).
+      --version          Show application version.
+      --jsonnetpkg-home="vendor"
+                         The directory used to cache packages in.
+  -q, --quiet            Suppress any output from git command.
+      --no-global-cache  Disable the global cache at ~/.cache/jb.
 
 Commands:
   help [<command>...]
@@ -116,6 +197,23 @@ Commands:
   rewrite
     Automatically rewrite legacy imports to absolute ones
 
+  cache status
+    Show status of global cache
+
+  cache flush [<flags>]
+    Completely empty the cache
+
+  cache add-remote <url>
+    Add a remote cache server
+
+  cache list-remote [<flags>]
+    List remote cache servers
+
+  cache remove-remote <url>
+    Remove a remote cache server
+
+  cache list [<flags>]
+    List cache entries
 
 ```
 
