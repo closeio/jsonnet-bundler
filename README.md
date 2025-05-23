@@ -182,7 +182,7 @@ Flags:
   -h, --help             Show context-sensitive help (also try --help-long and
                          --help-man).
       --version          Show application version.
-      --jsonnetpkg-home="vendor"
+      --jsonnetpkg-home="vendor"  
                          The directory used to cache packages in.
   -q, --quiet            Suppress any output from git command.
       --no-global-cache  Disable the global cache at ~/.cache/jb.
@@ -204,7 +204,7 @@ Commands:
     Automatically rewrite legacy imports to absolute ones
 
   cache status
-    Show status of the global cache
+    Show status of local and global caches
 
   cache flush
     Completely empty the cache
