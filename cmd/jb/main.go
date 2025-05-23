@@ -73,7 +73,7 @@ func Main() int {
 	// Cache command with subcommands
 	cacheCmd := a.Command(cacheActionName, "Cache management commands")
 
-	cacheStatusCmd := cacheCmd.Command("status", "Show status of local and global caches")
+	cacheStatusCmd := cacheCmd.Command("status", "Show status of the global cache")
 
 	// Clean command removed
 

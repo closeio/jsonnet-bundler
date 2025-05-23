@@ -198,9 +198,9 @@ Commands:
     Automatically rewrite legacy imports to absolute ones
 
   cache status
-    Show status of global cache
+    Show status of the global cache
 
-  cache flush [<flags>]
+  cache flush
     Completely empty the cache
 
   cache add-remote <url>
@@ -214,6 +214,7 @@ Commands:
 
   cache list [<flags>]
     List cache entries
+
 
 ```
 
