@@ -4,7 +4,8 @@
       "Bash(make check-license:*)",
       "Bash(make:*)",
       "Bash(git add:*)",
-      "Bash(rg:*)"
+      "Bash(rg:*)",
+      "Bash(go test:*)"
     ],
     "deny": []
   }

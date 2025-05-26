@@ -921,335 +921,394 @@ func (p *GitPackage) Install(ctx context.Context, name, dir, version string) (st
 	}
 	defer os.RemoveAll(tempDir) // Clean up temp directory when done
 
-	// Optimization for GitHub sources: download a tarball archive of the requested version
-	isGitHubRemote, _ := regexp.MatchString(`^(https|ssh)://github\.com/.+$`, p.Source.Remote())
-	if isGitHubRemote {
-		// Let git ls-remote decide if "version" is a ref or a commit SHA in the unlikely
-		// but possible event that a ref is comprised of 40 or more hex characters
-		commitSha, _ := remoteResolveRef(ctx, p.Source.Remote(), version)
-
-		// If the ref resolution failed and "version" looks like a SHA,
-		// assume it is one and proceed.
-		commitShaPattern := regexp.MustCompile("^([0-9a-f]{40,})$")
-		if commitSha == "" && commitShaPattern.MatchString(version) {
-			commitSha = version
-		}
-
-		archiveUrl := fmt.Sprintf("%s/archive/%s.tar.gz", strings.TrimSuffix(p.Source.Remote(), ".git"), commitSha)
-		archiveFilepath := filepath.Join(tempDir, commitSha+".tar.gz")
-
-		// Use the caching helper for downloading/updating the archive
-		err = ensureArchiveCache(archiveFilepath, archiveUrl)
+	// Try GitHub archive installation first
+	if isGitHubRepository(p.Source.Remote()) {
+		commitSha, err := p.installFromGitHubArchive(ctx, version, tempDir, destPath)
 		if err == nil {
-			// Open the archive file
-			ar, err := os.Open(archiveFilepath)
-			if err != nil {
-				return "", err
-			}
-			defer ar.Close()
-
-			// Ensure the destination directory exists
-			if err := os.MkdirAll(filepath.Dir(destPath), os.ModePerm); err != nil {
-				return "", errors.Wrap(err, "failed to create destination directory")
-			}
-
-			// Extract the sub-directory (if any) from the archive to the final destination
-			// If none specified, the entire archive is unpacked
-			err = gzipUntar(destPath, ar, p.Source.Subdir)
-			if err == nil {
-				return commitSha, nil
-			}
+			return commitSha, nil
 		}
-
-		// The repository may be private or the archive download may not work
-		// for other reasons. In any case, fall back to the slower git-based installation.
-		color.Yellow("archive install failed after retries: %v", err)
+		// Fall back to git clone on error
+		color.Yellow("archive install failed: %s", err)
 		color.Yellow("falling back to git clone...")
 	}
 
-	// Function to create git commands with the right working directory
-	gitCmd := func(workingDir string, args ...string) *exec.Cmd {
-		cmd := exec.CommandContext(ctx, "git", args...)
-		cmd.Stdin = os.Stdin
-		if GitQuiet {
-			cmd.Stdout = nil
-			cmd.Stderr = nil
-		} else {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-		}
-		cmd.Dir = workingDir
-		return cmd
+	// Try to use global cache or fall back to git clone
+	return p.installFromGit(ctx, version, globalCacheDir, tempDir, destPath)
+}
+
+// isGitHubRepository checks if the remote URL is a GitHub repository
+func isGitHubRepository(remote string) bool {
+	match, _ := regexp.MatchString(`^(https|ssh)://github\.com/.+$`, remote)
+	return match
+}
+
+// installFromGitHubArchive attempts to install a package from a GitHub archive URL
+func (p *GitPackage) installFromGitHubArchive(ctx context.Context, version, tempDir, destPath string) (string, error) {
+	// Resolve version to commit SHA
+	commitSha, err := p.resolveVersionToCommitSHA(ctx, version)
+	if err != nil {
+		return "", err
 	}
 
+	archiveUrl := fmt.Sprintf("%s/archive/%s.tar.gz", strings.TrimSuffix(p.Source.Remote(), ".git"), commitSha)
+	archiveFilepath := filepath.Join(tempDir, commitSha+".tar.gz")
+
+	// Use the caching helper for downloading/updating the archive
+	err = ensureArchiveCache(archiveFilepath, archiveUrl)
+	if err != nil {
+		return "", err
+	}
+
+	return p.extractArchiveToDestination(archiveFilepath, destPath, commitSha)
+}
+
+// resolveVersionToCommitSHA resolves a version string to a commit SHA
+func (p *GitPackage) resolveVersionToCommitSHA(ctx context.Context, version string) (string, error) {
+	// Let git ls-remote decide if "version" is a ref or a commit SHA
+	commitSha, _ := remoteResolveRef(ctx, p.Source.Remote(), version)
+
+	// If the ref resolution failed and "version" looks like a SHA, assume it is one
+	commitShaPattern := regexp.MustCompile("^([0-9a-f]{40,})$")
+	if commitSha == "" && commitShaPattern.MatchString(version) {
+		commitSha = version
+	}
+
+	if commitSha == "" {
+		return "", fmt.Errorf("could not resolve version %s to commit SHA", version)
+	}
+
+	return commitSha, nil
+}
+
+// extractArchiveToDestination extracts a downloaded archive to the destination path
+func (p *GitPackage) extractArchiveToDestination(archiveFilepath, destPath, commitSha string) (string, error) {
+	// Open the archive file
+	ar, err := os.Open(archiveFilepath)
+	if err != nil {
+		return "", err
+	}
+	defer ar.Close()
+
+	// Ensure the destination directory exists
+	if err := os.MkdirAll(filepath.Dir(destPath), os.ModePerm); err != nil {
+		return "", errors.Wrap(err, "failed to create destination directory")
+	}
+
+	// Extract the sub-directory (if any) from the archive to the final destination
+	err = gzipUntar(destPath, ar, p.Source.Subdir)
+	if err != nil {
+		return "", err
+	}
+
+	return commitSha, nil
+}
+
+// installFromGit installs a package using git clone/fetch operations
+func (p *GitPackage) installFromGit(ctx context.Context, version, globalCacheDir, tempDir, destPath string) (string, error) {
 	// We'll work in the temp directory if global cache is not available
 	workDir := tempDir
 	useGlobalCache := false
 	var commitHash string
 
-	// Check global cache first
+	// Try to use global cache first
 	if globalCacheDir != "" {
-		// Check if global cache already contains this repository and version
-		if _, err := os.Stat(globalCacheDir); err == nil {
-			if !GitQuiet {
-				color.Cyan("GLOBAL GIT CACHE HIT: %s", globalCacheDir)
-			}
-
-			// Check out the requested version
-			cmd := gitCmd(globalCacheDir, "-c", "advice.detachedHead=false", "checkout", version)
-			if err := cmd.Run(); err == nil {
-				// Get the commit hash
-				b := bytes.NewBuffer(nil)
-				cmd = exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
-				cmd.Stdout = b
-				cmd.Dir = globalCacheDir
-				if err := cmd.Run(); err == nil {
-					commitHash = strings.TrimSpace(b.String())
-					useGlobalCache = true
-					workDir = globalCacheDir
-				}
-			} else {
-				// Update the cache if checkout failed
-				if !GitQuiet {
-					color.Yellow("Version not found in global cache, updating: %s", version)
-				}
-
-				// Update the global cache
-				cmd = gitCmd(globalCacheDir, "fetch", "--tags", "origin")
-				if err := cmd.Run(); err == nil {
-					cmd = gitCmd(globalCacheDir, "-c", "advice.detachedHead=false", "checkout", version)
-					if err := cmd.Run(); err == nil {
-						// Get the commit hash
-						b := bytes.NewBuffer(nil)
-						cmd = exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
-						cmd.Stdout = b
-						cmd.Dir = globalCacheDir
-						if err := cmd.Run(); err == nil {
-							commitHash = strings.TrimSpace(b.String())
-							useGlobalCache = true
-							workDir = globalCacheDir
-						}
-					}
-				}
-			}
-		} else {
-			// Global cache directory exists but repo not yet cloned
-			if !GitQuiet {
-				color.Cyan("INITIALIZING GLOBAL GIT CACHE: %s", globalCacheDir)
-			}
-
-			// Initialize git repo in global cache
-			cmd := gitCmd(globalCacheDir, "init")
-			if err := cmd.Run(); err == nil {
-				cmd = gitCmd(globalCacheDir, "remote", "add", "origin", p.Source.Remote())
-				if err := cmd.Run(); err == nil {
-					// Attempt shallow fetch at specific revision
-					cmd = gitCmd(globalCacheDir, "fetch", "--tags", "--depth", "1", "origin", version)
-					fetchErr := cmd.Run()
-					if fetchErr != nil {
-						// Fall back to normal fetch (all revisions)
-						cmd = gitCmd(globalCacheDir, "fetch", "origin")
-						if err := cmd.Run(); err == nil {
-							cmd = gitCmd(globalCacheDir, "-c", "advice.detachedHead=false", "checkout", version)
-							if err := cmd.Run(); err == nil {
-								// Get the commit hash
-								b := bytes.NewBuffer(nil)
-								cmd = exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
-								cmd.Stdout = b
-								cmd.Dir = globalCacheDir
-								if err := cmd.Run(); err == nil {
-									commitHash = strings.TrimSpace(b.String())
-									useGlobalCache = true
-									workDir = globalCacheDir
-								}
-							}
-						}
-					} else {
-						cmd = gitCmd(globalCacheDir, "-c", "advice.detachedHead=false", "checkout", version)
-						if err := cmd.Run(); err == nil {
-							// Get the commit hash
-							b := bytes.NewBuffer(nil)
-							cmd = exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
-							cmd.Stdout = b
-							cmd.Dir = globalCacheDir
-							if err := cmd.Run(); err == nil {
-								commitHash = strings.TrimSpace(b.String())
-								useGlobalCache = true
-								workDir = globalCacheDir
-							}
-						}
-					}
-				}
-			}
-		}
+		workDir, commitHash, useGlobalCache = p.tryUseGlobalCache(ctx, globalCacheDir, version)
 	}
 
 	// If global cache didn't work, clone directly to temp directory
 	if !useGlobalCache {
-		if !GitQuiet {
-			color.Cyan("CLONING TO TEMPORARY DIRECTORY: %s", tempDir)
-		}
-
-		cmd := gitCmd(tempDir, "init")
-		err = cmd.Run()
+		var err error
+		commitHash, err = p.cloneToDirectory(ctx, tempDir, version)
 		if err != nil {
 			return "", err
 		}
-
-		cmd = gitCmd(tempDir, "remote", "add", "origin", p.Source.Remote())
-		err = cmd.Run()
-		if err != nil {
-			return "", err
-		}
-
-		// Attempt shallow fetch at specific revision
-		cmd = gitCmd(tempDir, "fetch", "--tags", "--depth", "1", "origin", version)
-		err = cmd.Run()
-		if err != nil {
-			// Fall back to normal fetch (all revisions)
-			cmd = gitCmd(tempDir, "fetch", "origin")
-			err = cmd.Run()
-			if err != nil {
-				return "", err
-			}
-		}
-
-		// Checkout the requested version
-		cmd = gitCmd(tempDir, "-c", "advice.detachedHead=false", "checkout", version)
-		err = cmd.Run()
-		if err != nil {
-			return "", err
-		}
-
-		// Get the commit hash
-		b := bytes.NewBuffer(nil)
-		cmd = exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
-		cmd.Stdout = b
-		cmd.Dir = tempDir
-		err = cmd.Run()
-		if err != nil {
-			return "", err
-		}
-
-		commitHash = strings.TrimSpace(b.String())
-
-		// Sparse checkout optimization if a Subdir is specified
-		if p.Source.Subdir != "" {
-			cmd := gitCmd(tempDir, "config", "core.sparsecheckout", "true")
-			err = cmd.Run()
-			if err != nil {
-				return "", err
-			}
-
-			glob := []byte(p.Source.Subdir + "/*\n")
-			err = os.WriteFile(filepath.Join(tempDir, ".git", "info", "sparse-checkout"), glob, 0644)
-			if err != nil {
-				return "", err
-			}
-
-			// Checkout again with sparse-checkout config
-			cmd = gitCmd(tempDir, "-c", "advice.detachedHead=false", "checkout", version)
-			err = cmd.Run()
-			if err != nil {
-				return "", err
-			}
-		}
-
-		// Remove the .git directory to save space
-		err = os.RemoveAll(path.Join(tempDir, ".git"))
-		if err != nil {
-			return "", err
-		}
+		workDir = tempDir
 	}
 
-	// Prepare destination directory
-	err = os.MkdirAll(path.Dir(destPath), os.ModePerm)
-	if err != nil {
-		return "", errors.Wrap(err, "failed to create parent path")
-	}
-
-	err = os.RemoveAll(destPath)
-	if err != nil {
-		return "", errors.Wrap(err, "failed to clean previous destination path")
-	}
-
-	// Create a temp directory for transferring the code
-	transferDir := filepath.Join(tempDir, "transfer")
-	if err := os.MkdirAll(transferDir, os.ModePerm); err != nil {
-		return "", errors.Wrap(err, "failed to create transfer directory")
-	}
-
-	// If we're using global cache, copy needed files to transfer dir
-	if useGlobalCache {
-		srcPath := path.Join(workDir, p.Source.Subdir)
-		copyPath := transferDir
-
-		// Copy files without .git directory
-		if err := filepath.Walk(srcPath, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return err
-			}
-
-			// Skip .git directory
-			if info.IsDir() && info.Name() == ".git" {
-				return filepath.SkipDir
-			}
-
-			// Get relative path
-			relPath, err := filepath.Rel(srcPath, path)
-			if err != nil {
-				return err
-			}
-
-			// Skip self
-			if relPath == "." {
-				return nil
-			}
-
-			destPath := filepath.Join(copyPath, relPath)
-
-			if info.IsDir() {
-				// Create directory
-				return os.MkdirAll(destPath, info.Mode())
-			} else {
-				// Copy file
-				input, err := os.Open(path)
-				if err != nil {
-					return err
-				}
-				defer input.Close()
-
-				// Create parent directory if needed
-				if err := os.MkdirAll(filepath.Dir(destPath), os.ModePerm); err != nil {
-					return err
-				}
-
-				output, err := os.Create(destPath)
-				if err != nil {
-					return err
-				}
-				defer output.Close()
-
-				_, err = io.Copy(output, input)
-				return err
-			}
-		}); err != nil {
-			return "", errors.Wrap(err, "failed to copy files from global cache")
-		}
-
-		// Move from transfer directory to final destination
-		err = os.Rename(transferDir, destPath)
-		if err != nil {
-			return "", errors.Wrap(err, "failed to move package")
-		}
-	} else {
-		// Move directly from temp directory to destination
-		srcPath := path.Join(tempDir, p.Source.Subdir)
-		err = os.Rename(srcPath, destPath)
-		if err != nil {
-			return "", errors.Wrap(err, "failed to move package")
-		}
+	// Copy/move files to destination
+	if err := p.copyToDestination(workDir, tempDir, destPath, useGlobalCache); err != nil {
+		return "", err
 	}
 
 	return commitHash, nil
+}
+
+// gitCmd creates a git command with the proper configuration
+func gitCmd(ctx context.Context, workingDir string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Stdin = os.Stdin
+	if GitQuiet {
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+	} else {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
+	cmd.Dir = workingDir
+	return cmd
+}
+
+// tryUseGlobalCache attempts to use the global cache for the repository
+func (p *GitPackage) tryUseGlobalCache(ctx context.Context, globalCacheDir, version string) (workDir string, commitHash string, useCache bool) {
+	// Check if global cache already contains this repository
+	if _, err := os.Stat(globalCacheDir); err == nil {
+		if !GitQuiet {
+			color.Cyan("GLOBAL GIT CACHE HIT: %s", globalCacheDir)
+		}
+
+		// Try to checkout the requested version
+		commitHash, err := p.checkoutVersionInCache(ctx, globalCacheDir, version)
+		if err == nil {
+			return globalCacheDir, commitHash, true
+		}
+
+		// Update the cache if checkout failed
+		if !GitQuiet {
+			color.Yellow("Version not found in global cache, updating: %s", version)
+		}
+
+		// Update and try again
+		if err := p.updateGlobalCache(ctx, globalCacheDir); err == nil {
+			commitHash, err := p.checkoutVersionInCache(ctx, globalCacheDir, version)
+			if err == nil {
+				return globalCacheDir, commitHash, true
+			}
+		}
+	} else {
+		// Initialize new global cache repository
+		commitHash, err := p.initializeGlobalCache(ctx, globalCacheDir, version)
+		if err == nil {
+			return globalCacheDir, commitHash, true
+		}
+	}
+
+	// Global cache failed
+	return "", "", false
+}
+
+// checkoutVersionInCache checks out a specific version in the cache directory
+func (p *GitPackage) checkoutVersionInCache(ctx context.Context, cacheDir, version string) (string, error) {
+	cmd := gitCmd(ctx, cacheDir, "-c", "advice.detachedHead=false", "checkout", version)
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+
+	// Get the commit hash
+	return p.getCommitHash(ctx, cacheDir)
+}
+
+// getCommitHash retrieves the current commit hash
+func (p *GitPackage) getCommitHash(ctx context.Context, dir string) (string, error) {
+	b := bytes.NewBuffer(nil)
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	cmd.Stdout = b
+	cmd.Dir = dir
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(b.String()), nil
+}
+
+// updateGlobalCache updates the global cache with latest changes
+func (p *GitPackage) updateGlobalCache(ctx context.Context, cacheDir string) error {
+	cmd := gitCmd(ctx, cacheDir, "fetch", "--tags", "origin")
+	return cmd.Run()
+}
+
+// initializeGlobalCache initializes a new global cache repository
+func (p *GitPackage) initializeGlobalCache(ctx context.Context, cacheDir, version string) (string, error) {
+	if !GitQuiet {
+		color.Cyan("INITIALIZING GLOBAL GIT CACHE: %s", cacheDir)
+	}
+
+	// Initialize git repo
+	cmd := gitCmd(ctx, cacheDir, "init")
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+
+	// Add remote
+	cmd = gitCmd(ctx, cacheDir, "remote", "add", "origin", p.Source.Remote())
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+
+	// Try shallow fetch first
+	cmd = gitCmd(ctx, cacheDir, "fetch", "--tags", "--depth", "1", "origin", version)
+	if err := cmd.Run(); err != nil {
+		// Fall back to full fetch
+		cmd = gitCmd(ctx, cacheDir, "fetch", "origin")
+		if err := cmd.Run(); err != nil {
+			return "", err
+		}
+	}
+
+	// Checkout version
+	return p.checkoutVersionInCache(ctx, cacheDir, version)
+}
+
+// cloneToDirectory clones the repository to a specific directory
+func (p *GitPackage) cloneToDirectory(ctx context.Context, dir, version string) (string, error) {
+	if !GitQuiet {
+		color.Cyan("CLONING TO TEMPORARY DIRECTORY: %s", dir)
+	}
+
+	// Initialize repository
+	cmd := gitCmd(ctx, dir, "init")
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+
+	// Add remote
+	cmd = gitCmd(ctx, dir, "remote", "add", "origin", p.Source.Remote())
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+
+	// Attempt shallow fetch at specific revision
+	cmd = gitCmd(ctx, dir, "fetch", "--tags", "--depth", "1", "origin", version)
+	if err := cmd.Run(); err != nil {
+		// Fall back to normal fetch
+		cmd = gitCmd(ctx, dir, "fetch", "origin")
+		if err := cmd.Run(); err != nil {
+			return "", err
+		}
+	}
+
+	// Checkout the requested version
+	cmd = gitCmd(ctx, dir, "-c", "advice.detachedHead=false", "checkout", version)
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+
+	// Get commit hash
+	commitHash, err := p.getCommitHash(ctx, dir)
+	if err != nil {
+		return "", err
+	}
+
+	// Apply sparse checkout if needed
+	if p.Source.Subdir != "" {
+		if err := p.applySparseCheckout(ctx, dir, version); err != nil {
+			return "", err
+		}
+	}
+
+	// Remove .git directory to save space
+	if err := os.RemoveAll(path.Join(dir, ".git")); err != nil {
+		return "", err
+	}
+
+	return commitHash, nil
+}
+
+// applySparseCheckout configures and applies sparse checkout
+func (p *GitPackage) applySparseCheckout(ctx context.Context, dir, version string) error {
+	cmd := gitCmd(ctx, dir, "config", "core.sparsecheckout", "true")
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	glob := []byte(p.Source.Subdir + "/*\n")
+	if err := os.WriteFile(filepath.Join(dir, ".git", "info", "sparse-checkout"), glob, 0644); err != nil {
+		return err
+	}
+
+	// Checkout again with sparse-checkout config
+	cmd = gitCmd(ctx, dir, "-c", "advice.detachedHead=false", "checkout", version)
+	return cmd.Run()
+}
+
+// copyToDestination copies files from source to destination
+func (p *GitPackage) copyToDestination(workDir, tempDir, destPath string, useGlobalCache bool) error {
+	// Prepare destination directory
+	if err := os.MkdirAll(path.Dir(destPath), os.ModePerm); err != nil {
+		return errors.Wrap(err, "failed to create parent path")
+	}
+
+	if err := os.RemoveAll(destPath); err != nil {
+		return errors.Wrap(err, "failed to clean previous destination path")
+	}
+
+	if useGlobalCache {
+		// Copy from global cache
+		return p.copyFromGlobalCache(workDir, tempDir, destPath)
+	}
+
+	// Move directly from temp directory
+	srcPath := path.Join(tempDir, p.Source.Subdir)
+	if err := os.Rename(srcPath, destPath); err != nil {
+		return errors.Wrap(err, "failed to move package")
+	}
+
+	return nil
+}
+
+// copyFromGlobalCache copies files from global cache to destination
+func (p *GitPackage) copyFromGlobalCache(workDir, tempDir, destPath string) error {
+	// Create a temp directory for transferring the code
+	transferDir := filepath.Join(tempDir, "transfer")
+	if err := os.MkdirAll(transferDir, os.ModePerm); err != nil {
+		return errors.Wrap(err, "failed to create transfer directory")
+	}
+
+	srcPath := path.Join(workDir, p.Source.Subdir)
+
+	// Copy files without .git directory
+	if err := copyDirectory(srcPath, transferDir); err != nil {
+		return errors.Wrap(err, "failed to copy files from global cache")
+	}
+
+	// Move from transfer directory to final destination
+	if err := os.Rename(transferDir, destPath); err != nil {
+		return errors.Wrap(err, "failed to move package")
+	}
+
+	return nil
+}
+
+// copyDirectory recursively copies a directory while skipping .git folders
+func copyDirectory(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Skip .git directory
+		if info.IsDir() && info.Name() == ".git" {
+			return filepath.SkipDir
+		}
+
+		// Get relative path
+		relPath, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+
+		// Skip self
+		if relPath == "." {
+			return nil
+		}
+
+		destPath := filepath.Join(dst, relPath)
+
+		if info.IsDir() {
+			// Create directory
+			return os.MkdirAll(destPath, info.Mode())
+		}
+
+		// Copy file
+		return copyFile(path, destPath)
+	})
+}
+
+// copyFile copies a single file
+func copyFile(src, dst string) error {
+	// Create parent directory if needed
+	if err := os.MkdirAll(filepath.Dir(dst), os.ModePerm); err != nil {
+		return err
+	}
+
+	// Use the existing CopyFile utility function
+	return CopyFile(src, dst)
 }
