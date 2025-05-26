@@ -34,8 +34,8 @@ func parallelEnsure(direct *deps.Ordered, vendorDir, pathToParentModule string, 
 	locksMutex := &sync.Mutex{}
 
 	// Configure concurrency limits
-	maxConcurrentDownloads := 10 // Increased from 5 for better parallelism
-	maxConcurrentNested := 5     // Process nested dependencies concurrently
+	maxConcurrentDownloads := 10
+	maxConcurrentNested := 5
 
 	// Create error group for better error handling
 	var firstErr error
@@ -116,7 +116,7 @@ func parallelEnsure(direct *deps.Ordered, vendorDir, pathToParentModule string, 
 	var nestedWg sync.WaitGroup
 
 	// Worker pool for processing nested dependencies
-	for i := 0; i < maxConcurrentNested; i++ {
+	for range maxConcurrentNested {
 		nestedWg.Add(1)
 		go func() {
 			defer nestedWg.Done()
