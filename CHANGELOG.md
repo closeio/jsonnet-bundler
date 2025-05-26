@@ -2,6 +2,13 @@
 
 ## Unreleased / TBD
 
+### Performance Improvements
+
+- **[FEATURE]** Add concurrent processing for nested dependencies installation
+- **[ENHANCEMENT]** Add retry mechanism for downloading GitHub archives before falling back to git clone
+- **[BUGFIX]** Fix concurrency issue when JB_PARALLEL_DOWNLOADS=true was set
+- **[ENHANCEMENT]** Refactor the Install function for better maintainability
+
 ### Advanced Caching System
 
 - **[FEATURE]** Add global caching system in `~/.cache/jb` to improve performance across projects
@@ -13,13 +20,21 @@
 - **[BREAKING]** Remove local cache system in favor of global and remote caches
 - **[ENHANCEMENT]** Add new cache management commands with a modern subcommand structure:
   - `jb cache status` - Display cache statistics and health
-  - `jb cache flush` - Completely empty the cache
+  - `jb cache flush` - Empty the cache
   - `jb cache add-remote` - Add a remote cache server
   - `jb cache list-remote` - List remote cache servers
   - `jb cache remove-remote` - Remove a remote cache server
   - `jb cache list` - List all cache entries with metadata
 - **[ENHANCEMENT]** Add `--no-global-cache` flag to disable global caching
 - **[ENHANCEMENT]** Add `JB_CACHE_DIR` environment variable to customize global cache location
+
+### Build and CI Improvements
+
+- **[ENHANCEMENT]** Add arm64 support for macOS binary compilation
+- **[ENHANCEMENT]** Enable GitHub Actions for CI/CD
+- **[ENHANCEMENT]** Update to support only the latest two maintained Go releases (1.23, 1.24)
+- **[ENHANCEMENT]** Ensure stable transitive dependencies
+- **[ENHANCEMENT]** Disable Windows build and ARM 32-bit for Darwin
 
 ## 0.5.1 / 2022-06-22
 
