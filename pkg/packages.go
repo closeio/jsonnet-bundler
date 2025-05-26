@@ -175,10 +175,15 @@ func linkLegacy(vendorDir string, locks *deps.Ordered) error {
 			continue
 		}
 
+		// ensure parent directory exists
+		if err := os.MkdirAll(filepath.Dir(legacyName), os.ModePerm); err != nil {
+			return err
+		}
+
 		// create the symlink
 		if err := os.Symlink(
-			filepath.Join(pkgName),
-			filepath.Join(legacyName),
+			pkgName,
+			legacyName,
 		); err != nil {
 			return err
 		}

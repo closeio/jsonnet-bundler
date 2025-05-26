@@ -9,7 +9,11 @@
       "Bash(grep:*)",
       "Bash(chmod:*)",
       "Bash(rm:*)",
-      "Bash(SKIP_NETWORK_TESTS=\"\" go test -v ./pkg -run TestParallelGitHubArchiveDownloads -timeout 5m)"
+      "Bash(SKIP_NETWORK_TESTS=\"\" go test -v ./pkg -run TestParallelGitHubArchiveDownloads -timeout 5m)",
+      "Bash(JB_PARALLEL_DOWNLOADS=true make test-integration 2 >& 1)",
+      "Bash(go fmt:*)",
+      "Bash(go vet:*)",
+      "Bash(go run:*)"
     ],
     "deny": []
   }

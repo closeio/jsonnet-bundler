@@ -363,7 +363,7 @@ func TestApplySparseCheckout(t *testing.T) {
 	}
 
 	// Apply sparse checkout
-	err = gitPkg.applySparseCheckout(ctx, tempDir, "main")
+	_ = gitPkg.applySparseCheckout(ctx, tempDir, "main")
 
 	// This will fail because there's no actual checkout, but we can verify the config was set
 	sparseCheckoutFile := filepath.Join(tempDir, ".git", "info", "sparse-checkout")

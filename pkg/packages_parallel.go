@@ -30,149 +30,166 @@ import (
 // parallelEnsure is a parallel version of ensure that downloads multiple packages concurrently
 func parallelEnsure(direct *deps.Ordered, vendorDir, pathToParentModule string, locks *deps.Ordered) (*deps.Ordered, error) {
 	resultDeps := deps.NewOrdered()
+	depsMutex := &sync.Mutex{}
+	locksMutex := &sync.Mutex{}
 
-	// First, identify packages that need to be downloaded
-	type downloadTask struct {
-		key           string
-		dep           deps.Dependency
-		locked        deps.Dependency
-		hasLock       bool
-		needsDownload bool
-	}
+	// Configure concurrency limits
+	maxConcurrentDownloads := 10 // Increased from 5 for better parallelism
+	maxConcurrentNested := 5     // Process nested dependencies concurrently
 
-	var tasks []downloadTask
-	var mu sync.Mutex
+	// Create error group for better error handling
+	var firstErr error
+	var errOnce sync.Once
 
-	// Prepare download tasks
+	// Phase 1: Download all direct dependencies in parallel
+	downloadSem := make(chan struct{}, maxConcurrentDownloads)
+	var downloadWg sync.WaitGroup
+
 	for _, k := range direct.Keys() {
 		d, _ := direct.Get(k)
 		l, present := locks.Get(d.Name())
 
-		task := downloadTask{
-			key:           k,
-			dep:           d,
-			locked:        l,
-			hasLock:       present,
-			needsDownload: true,
-		}
-
-		// already locked and the integrity is intact
+		// Check if already locked and intact
 		if present {
 			d.Version = l.Version
-
 			if check(l, vendorDir) {
-				task.needsDownload = false
+				depsMutex.Lock()
 				resultDeps.Set(d.Name(), l)
+				depsMutex.Unlock()
+				continue
 			}
 		}
 
-		tasks = append(tasks, task)
-	}
+		downloadWg.Add(1)
+		go func(dep deps.Dependency, locked deps.Dependency, hasLock bool) {
+			defer downloadWg.Done()
 
-	// Download packages in parallel
-	type downloadResult struct {
-		key        string
-		dependency *deps.Dependency
-		err        error
-	}
-
-	resultChan := make(chan downloadResult, len(tasks))
-	var wg sync.WaitGroup
-
-	// Limit concurrent downloads to avoid overwhelming the system
-	semaphore := make(chan struct{}, 5) // Max 5 concurrent downloads
-
-	for _, task := range tasks {
-		if !task.needsDownload {
-			continue
-		}
-
-		wg.Add(1)
-		go func(t downloadTask) {
-			defer wg.Done()
-
-			semaphore <- struct{}{}        // Acquire
-			defer func() { <-semaphore }() // Release
+			downloadSem <- struct{}{}        // Acquire
+			defer func() { <-downloadSem }() // Release
 
 			// Remove existing directory
-			dir := filepath.Join(vendorDir, t.dep.Name())
+			dir := filepath.Join(vendorDir, dep.Name())
 			os.RemoveAll(dir)
 
 			// Download the package
-			locked, err := download(t.dep, vendorDir, pathToParentModule)
+			downloaded, err := download(dep, vendorDir, pathToParentModule)
 			if err != nil {
-				resultChan <- downloadResult{key: t.key, dependency: nil, err: errors.Wrap(err, "downloading")}
+				errOnce.Do(func() {
+					firstErr = errors.Wrap(err, "downloading "+dep.Name())
+				})
 				return
 			}
 
 			// Check sum if expected
-			if t.hasLock && t.locked.Sum != "" && locked.Sum != t.locked.Sum {
-				resultChan <- downloadResult{
-					key:        t.key,
-					dependency: nil,
-					err:        fmt.Errorf("checksum mismatch for %s. Expected %s but got %s", t.dep.Name(), t.locked.Sum, locked.Sum),
-				}
+			if hasLock && locked.Sum != "" && downloaded.Sum != locked.Sum {
+				errOnce.Do(func() {
+					firstErr = fmt.Errorf("checksum mismatch for %s. Expected %s but got %s", dep.Name(), locked.Sum, downloaded.Sum)
+				})
 				return
 			}
 
-			resultChan <- downloadResult{key: t.key, dependency: locked, err: nil}
-		}(task)
+			// Update results
+			depsMutex.Lock()
+			resultDeps.Set(downloaded.Name(), *downloaded)
+			depsMutex.Unlock()
+
+			locksMutex.Lock()
+			locks.Set(downloaded.Name(), *downloaded)
+			locksMutex.Unlock()
+		}(d, l, present)
 	}
 
-	// Close result channel when all downloads are done
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	// Collect results
-	for result := range resultChan {
-		if result.err != nil {
-			return nil, result.err
-		}
-
-		if result.dependency != nil {
-			mu.Lock()
-			resultDeps.Set(result.dependency.Name(), *result.dependency)
-			// we settled on a new version, add it to the locks for recursion
-			locks.Set(result.dependency.Name(), *result.dependency)
-			mu.Unlock()
-		}
+	downloadWg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
-	// Process nested dependencies (still sequential for now, could be parallelized too)
+	// Phase 2: Process nested dependencies concurrently
+	type nestedTask struct {
+		dep          deps.Dependency
+		vendorPath   string
+		absolutePath string
+	}
+
+	nestedChan := make(chan nestedTask, 100)
+	nestedSem := make(chan struct{}, maxConcurrentNested)
+	var nestedWg sync.WaitGroup
+
+	// Worker pool for processing nested dependencies
+	for i := 0; i < maxConcurrentNested; i++ {
+		nestedWg.Add(1)
+		go func() {
+			defer nestedWg.Done()
+			for task := range nestedChan {
+				func() {
+					nestedSem <- struct{}{}        // Acquire
+					defer func() { <-nestedSem }() // Release
+
+					f, err := jsonnetfile.Load(filepath.Join(task.vendorPath, jsonnetfile.File))
+					if err != nil {
+						if !os.IsNotExist(err) {
+							errOnce.Do(func() {
+								firstErr = err
+							})
+						}
+						return
+					}
+
+					// Recursively process nested dependencies
+					nested, err := parallelEnsure(f.Dependencies, vendorDir, task.absolutePath, locks)
+					if err != nil {
+						errOnce.Do(func() {
+							firstErr = err
+						})
+						return
+					}
+
+					// Merge nested dependencies
+					depsMutex.Lock()
+					for _, k := range nested.Keys() {
+						d, _ := nested.Get(k)
+						if _, exists := resultDeps.Get(d.Name()); !exists {
+							resultDeps.Set(d.Name(), d)
+						}
+					}
+					depsMutex.Unlock()
+				}()
+			}
+		}()
+	}
+
+	// Queue nested dependency tasks
 	for _, k := range resultDeps.Keys() {
 		d, _ := resultDeps.Get(k)
 		if d.Single {
-			// skip dependencies that explicitly don't want nested ones installed
-			continue
+			continue // Skip dependencies that don't want nested ones
 		}
 
-		f, err := jsonnetfile.Load(filepath.Join(vendorDir, d.Name(), jsonnetfile.File))
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
+		vendorPath := filepath.Join(vendorDir, d.Name())
+
+		// Check if the path exists before evaluating symlinks
+		absolutePath := vendorPath
+		if _, err := os.Stat(vendorPath); err == nil {
+			// Path exists, try to resolve symlinks
+			resolvedPath, err := filepath.EvalSymlinks(vendorPath)
+			if err == nil {
+				absolutePath = resolvedPath
 			}
-			return nil, err
+			// If EvalSymlinks fails, just use the original path
 		}
 
-		absolutePath, err := filepath.EvalSymlinks(filepath.Join(vendorDir, d.Name()))
-		if err != nil {
-			return nil, err
+		nestedChan <- nestedTask{
+			dep:          d,
+			vendorPath:   vendorPath,
+			absolutePath: absolutePath,
 		}
+	}
 
-		// Recursively process nested dependencies (could use parallelEnsure here too)
-		nested, err := parallelEnsure(f.Dependencies, vendorDir, absolutePath, locks)
-		if err != nil {
-			return nil, err
-		}
+	close(nestedChan)
+	nestedWg.Wait()
 
-		for _, k := range nested.Keys() {
-			d, _ := nested.Get(k)
-			if _, ok := resultDeps.Get(d.Name()); !ok {
-				resultDeps.Set(d.Name(), d)
-			}
-		}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
 	return resultDeps, nil
