@@ -3,7 +3,8 @@
     "allow": [
       "Bash(make check-license:*)",
       "Bash(make:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(rg:*)"
     ],
     "deny": []
   }

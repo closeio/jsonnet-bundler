@@ -709,6 +709,33 @@ func (c *Client) PutObject(ctx context.Context, s3Key string, data []byte) error
 	return nil
 }
 
+// ObjectExists checks if an object exists in S3
+func (c *Client) ObjectExists(ctx context.Context, s3Key string) (bool, error) {
+	// Ensure we have a valid client
+	if c.s3Client == nil {
+		return false, fmt.Errorf("S3 client not initialized")
+	}
+
+	// Format the key
+	s3Key = FormatKey(s3Key)
+
+	// Use HeadObject to check if the object exists
+	_, err := c.s3Client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(c.Bucket),
+		Key:    aws.String(s3Key),
+	})
+
+	if err != nil {
+		// Check if the error is due to the object not existing
+		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "404") {
+			return false, nil
+		}
+		return false, errors.Wrap(err, "failed to check object existence")
+	}
+
+	return true, nil
+}
+
 // FormatKey formats an S3 key by ensuring it doesn't have leading slashes
 func FormatKey(key string) string {
 	// Remove all leading slashes

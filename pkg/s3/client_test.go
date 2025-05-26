@@ -15,6 +15,7 @@
 package s3
 
 import (
+	"context"
 	"os"
 	"testing"
 )
@@ -205,4 +206,88 @@ func TestNewClientFromEnv(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestObjectExists(t *testing.T) {
+	// Skip test if not running against localstack
+	endpoint := os.Getenv("AWS_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("Skipping test - AWS_ENDPOINT not set (localstack required)")
+	}
+
+	// Set up test environment
+	bucket := "test-object-exists"
+	os.Setenv("AWS_ACCESS_KEY_ID", "test")
+	os.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	os.Setenv("AWS_REGION", "us-east-1")
+
+	// Create client
+	client, err := NewClientFromEnv(bucket)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Ensure bucket exists
+	exists, err := client.BucketExists(ctx)
+	if err != nil {
+		t.Fatalf("Failed to check bucket existence: %v", err)
+	}
+	if !exists {
+		t.Skip("Test bucket does not exist, skipping test")
+	}
+
+	// Test non-existent object
+	t.Run("Non-existent object", func(t *testing.T) {
+		exists, err := client.ObjectExists(ctx, "non-existent-object.txt")
+		if err != nil {
+			t.Errorf("ObjectExists() error = %v", err)
+		}
+		if exists {
+			t.Errorf("ObjectExists() = true, want false for non-existent object")
+		}
+	})
+
+	// Test existing object
+	t.Run("Existing object", func(t *testing.T) {
+		// First, upload a test object
+		testKey := "test-object-exists.txt"
+		testData := []byte("test content")
+		
+		err := client.PutObject(ctx, testKey, testData)
+		if err != nil {
+			t.Fatalf("Failed to create test object: %v", err)
+		}
+
+		// Now check if it exists
+		exists, err := client.ObjectExists(ctx, testKey)
+		if err != nil {
+			t.Errorf("ObjectExists() error = %v", err)
+		}
+		if !exists {
+			t.Errorf("ObjectExists() = false, want true for existing object")
+		}
+	})
+
+	// Test with formatted keys
+	t.Run("Key with leading slash", func(t *testing.T) {
+		// Upload object without leading slash
+		testKey := "test-slash-object.txt"
+		testData := []byte("test content")
+		
+		err := client.PutObject(ctx, testKey, testData)
+		if err != nil {
+			t.Fatalf("Failed to create test object: %v", err)
+		}
+
+		// Check with leading slash - should still find it
+		exists, err := client.ObjectExists(ctx, "/"+testKey)
+		if err != nil {
+			t.Errorf("ObjectExists() error = %v", err)
+		}
+		if !exists {
+			t.Errorf("ObjectExists() = false, want true (key formatting should handle leading slash)")
+		}
+	})
 }

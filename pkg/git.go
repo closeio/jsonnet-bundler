@@ -118,35 +118,81 @@ func downloadGitHubArchive(filepath string, urlStr string) error {
 		return nil
 	}
 
-	// Handle regular HTTP URLs
-	// Get the data
-	resp, err := http.Get(urlStr)
-	if err != nil {
-		return err
-	}
-	if !GitQuiet {
-		color.Cyan("GET %s %d", urlStr, resp.StatusCode)
-	}
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("unexpected status code %d", resp.StatusCode)
+	// Handle regular HTTP URLs with retry logic
+	const maxRetries = 3
+	var lastErr error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		// Add exponential backoff for retries
+		if attempt > 1 {
+			backoffTime := time.Duration(attempt-1) * time.Second
+			if !GitQuiet {
+				color.Yellow("Retrying download (attempt %d/%d) after %v...", attempt, maxRetries, backoffTime)
+			}
+			time.Sleep(backoffTime)
+		}
+
+		// Get the data
+		resp, err := http.Get(urlStr)
+		if err != nil {
+			lastErr = err
+			if !GitQuiet {
+				color.Yellow("Download attempt %d/%d failed: %v", attempt, maxRetries, err)
+			}
+			continue
+		}
+
+		if !GitQuiet {
+			color.Cyan("GET %s %d (attempt %d/%d)", urlStr, resp.StatusCode, attempt, maxRetries)
+		}
+
+		// Handle different status codes
+		if resp.StatusCode == 200 {
+			// Success - proceed with download
+			defer resp.Body.Close()
+
+			// Create the file
+			out, err := os.Create(filepath)
+			if err != nil {
+				resp.Body.Close()
+				return err
+			}
+			defer out.Close()
+
+			// Write the body to file
+			_, err = io.Copy(out, resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				os.Remove(filepath) // Clean up partial file
+				lastErr = err
+				if !GitQuiet {
+					color.Yellow("Download attempt %d/%d failed during file write: %v", attempt, maxRetries, err)
+				}
+				continue
+			}
+
+			// Success!
+			return nil
+		} else if resp.StatusCode >= 500 || resp.StatusCode == 429 {
+			// Server error or rate limit - worth retrying
+			resp.Body.Close()
+			lastErr = fmt.Errorf("unexpected status code %d", resp.StatusCode)
+			if !GitQuiet {
+				color.Yellow("Download attempt %d/%d failed with status %d", attempt, maxRetries, resp.StatusCode)
+			}
+			continue
+		} else {
+			// Client error (4xx except 429) - don't retry
+			resp.Body.Close()
+			return fmt.Errorf("unexpected status code %d", resp.StatusCode)
+		}
 	}
 
-	defer resp.Body.Close()
-
-	// Create the file
-	out, err := os.Create(filepath)
-	if err != nil {
-		return err
+	// All retries failed
+	if lastErr != nil {
+		return fmt.Errorf("download failed after %d attempts: %w", maxRetries, lastErr)
 	}
-	defer out.Close()
-
-	// Write the body to file
-	_, err = io.Copy(out, resp.Body)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return fmt.Errorf("download failed after %d attempts", maxRetries)
 }
 
 // getGlobalCacheDir returns the path to the global cache directory
@@ -917,8 +963,8 @@ func (p *GitPackage) Install(ctx context.Context, name, dir, version string) (st
 
 		// The repository may be private or the archive download may not work
 		// for other reasons. In any case, fall back to the slower git-based installation.
-		color.Yellow("archive install failed: %s", err)
-		color.Yellow("retrying with git...")
+		color.Yellow("archive install failed after retries: %v", err)
+		color.Yellow("falling back to git clone...")
 	}
 
 	// Function to create git commands with the right working directory

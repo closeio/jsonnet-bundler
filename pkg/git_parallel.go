@@ -235,6 +235,22 @@ func parallelPopulateRemoteS3Caches(remoteCaches []string, filePath, cacheKey st
 				return
 			}
 
+			// Check if the object already exists in S3
+			objectExists, err := client.ObjectExists(ctx, s3Key)
+			if err != nil {
+				if !GitQuiet {
+					color.Yellow("WARNING: Failed to check if object exists in S3: %v", err)
+				}
+				return
+			}
+
+			if objectExists {
+				if !GitQuiet {
+					color.Green("Object already exists in S3 remote cache, skipping upload: %s/%s", cacheURL, s3Key)
+				}
+				return
+			}
+
 			// Upload the file
 			err = client.Upload(ctx, filePath, s3Key)
 			if err != nil {

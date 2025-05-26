@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Go version
+
+- This project must build with Go 1.23 and Go 1.24 versions. Make sure it doesn't use any deprecated code from earlier versions.
+
 ## Commands
 
 ### Building
