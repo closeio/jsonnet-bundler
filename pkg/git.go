@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fatih/color"
@@ -68,6 +69,20 @@ func getCacheKeyForURL(archiveUrl string) string {
 	return hex.EncodeToString(urlHash[:16])
 }
 
+// getArchiveMutex returns a mutex for the given cache key, creating one if necessary
+func getArchiveMutex(cacheKey string) *sync.Mutex {
+	archiveCacheMutexesLock.Lock()
+	defer archiveCacheMutexesLock.Unlock()
+
+	if mutex, exists := archiveCacheMutexes[cacheKey]; exists {
+		return mutex
+	}
+
+	mutex := &sync.Mutex{}
+	archiveCacheMutexes[cacheKey] = mutex
+	return mutex
+}
+
 type GitPackage struct {
 	Source *deps.Git
 }
@@ -84,7 +99,80 @@ var (
 	GlobalCacheEnabled = true
 	// DefaultGlobalCacheDir is the default location for the global cache
 	DefaultGlobalCacheDir = ""
+
+	// globalCacheMutex protects concurrent access to the global cache
+	globalCacheMutex sync.Mutex
+	// archiveCacheMutexes protects concurrent downloads of the same archive
+	archiveCacheMutexes     = make(map[string]*sync.Mutex)
+	archiveCacheMutexesLock sync.Mutex
 )
+
+// validateGzipFile checks if a file is a valid gzip file by reading through the entire archive
+func validateGzipFile(filepath string) error {
+	file, err := os.Open(filepath)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	// Get file info for size
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to stat file: %w", err)
+	}
+
+	// Try to read the gzip header
+	gr, err := gzip.NewReader(file)
+	if err != nil {
+		return fmt.Errorf("invalid gzip header: %w", err)
+	}
+	defer gr.Close()
+
+	// Read through the entire tar archive to ensure it's not corrupted
+	tr := tar.NewReader(gr)
+	entriesProcessed := 0
+	totalSize := int64(0)
+
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			// Reached end of archive
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("corrupted tar entry at position %d: %w", entriesProcessed, err)
+		}
+
+		if header == nil {
+			continue
+		}
+
+		entriesProcessed++
+
+		// For regular files, read through the content to ensure it's not corrupted
+		if header.Typeflag == tar.TypeReg {
+			// Use io.CopyN to read the exact file size
+			n, err := io.CopyN(io.Discard, tr, header.Size)
+			if err != nil {
+				return fmt.Errorf("corrupted file content for %s (read %d of %d bytes): %w",
+					header.Name, n, header.Size, err)
+			}
+			totalSize += n
+		}
+	}
+
+	if entriesProcessed == 0 {
+		return fmt.Errorf("tar archive is empty")
+	}
+
+	// Archive is valid - we successfully read through all entries
+	if !GitQuiet {
+		color.Green("Archive validation passed (size: %d bytes, entries: %d, content size: %d bytes)",
+			info.Size(), entriesProcessed, totalSize)
+	}
+
+	return nil
+}
 
 func downloadGitHubArchive(filepath string, urlStr string) error {
 	// Check if this is an S3 URL
@@ -151,6 +239,12 @@ func downloadGitHubArchive(filepath string, urlStr string) error {
 			// Success - proceed with download
 			defer resp.Body.Close()
 
+			// Get ETag for integrity verification if available
+			etag := resp.Header.Get("ETag")
+			if etag != "" && !GitQuiet {
+				color.Cyan("Download ETag: %s", etag)
+			}
+
 			// Create the file
 			out, err := os.Create(filepath)
 			if err != nil {
@@ -159,14 +253,49 @@ func downloadGitHubArchive(filepath string, urlStr string) error {
 			}
 			defer out.Close()
 
-			// Write the body to file
-			_, err = io.Copy(out, resp.Body)
+			// Write the body to file with a hash calculator
+			hasher := sha256.New()
+			writer := io.MultiWriter(out, hasher)
+			written, err := io.Copy(writer, resp.Body)
 			resp.Body.Close()
+			out.Close() // Close the file explicitly before validation
+
 			if err != nil {
 				os.Remove(filepath) // Clean up partial file
 				lastErr = err
 				if !GitQuiet {
 					color.Yellow("Download attempt %d/%d failed during file write: %v", attempt, maxRetries, err)
+				}
+				continue
+			}
+
+			// Calculate file hash
+			fileHash := fmt.Sprintf("%x", hasher.Sum(nil))
+			if !GitQuiet {
+				color.Cyan("Downloaded file SHA256: %s", fileHash)
+			}
+
+			// Verify file size if Content-Length was provided
+			if contentLength := resp.ContentLength; contentLength > 0 && written != contentLength {
+				os.Remove(filepath)
+				lastErr = fmt.Errorf("incomplete download: expected %d bytes, got %d", contentLength, written)
+				if !GitQuiet {
+					color.Yellow("Download attempt %d/%d incomplete: %v", attempt, maxRetries, lastErr)
+				}
+				continue
+			}
+
+			// Validate it's a valid gzip file by reading through the entire archive
+			if err := validateGzipFile(filepath); err != nil {
+				os.Remove(filepath)
+				// Check if this is an EOF error which might indicate truncation
+				if strings.Contains(err.Error(), "unexpected EOF") || strings.Contains(err.Error(), "EOF") {
+					lastErr = fmt.Errorf("archive appears to be truncated or corrupted: %w", err)
+				} else {
+					lastErr = fmt.Errorf("invalid archive: %w", err)
+				}
+				if !GitQuiet {
+					color.Yellow("Download attempt %d/%d produced invalid archive: %v", attempt, maxRetries, err)
 				}
 				continue
 			}
@@ -239,7 +368,15 @@ func getGlobalCacheDir() (string, error) {
 // 2. Remote caches (if configured)
 // 3. Upstream source (if all else fails)
 func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
-	// Check if file already exists at the destination
+	// Create a unique key based on the URL
+	cacheKey := getCacheKeyForURL(archiveUrl)
+
+	// Get a mutex for this specific archive to prevent concurrent downloads
+	archiveMutex := getArchiveMutex(cacheKey)
+	archiveMutex.Lock()
+	defer archiveMutex.Unlock()
+
+	// Check if file already exists at the destination (double-check after acquiring lock)
 	if _, err := os.Stat(archiveFilepath); err == nil {
 		if !GitQuiet {
 			color.Green("FILE ALREADY EXISTS %s", archiveFilepath)
@@ -248,9 +385,6 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-
-	// Create a unique key based on the URL
-	cacheKey := getCacheKeyForURL(archiveUrl)
 
 	// Step 1: If global cache is enabled, check the global cache
 	if GlobalCacheEnabled {
@@ -549,6 +683,10 @@ DownloadToDestination:
 
 // registerInGlobalCacheIndex adds an entry to the global cache index
 func registerInGlobalCacheIndex(filePath, url string) {
+	// Lock for global cache index operations
+	globalCacheMutex.Lock()
+	defer globalCacheMutex.Unlock()
+
 	// Create a unique key from the URL
 	cacheKey := getCacheKeyForURL(url)
 
@@ -783,7 +921,7 @@ func registerInGlobalCacheIndex(filePath, url string) {
 func gzipUntar(dst string, r io.Reader, subDir string) error {
 	gzr, err := gzip.NewReader(r)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create gzip reader: %w", err)
 	}
 	defer gzr.Close()
 
@@ -791,18 +929,36 @@ func gzipUntar(dst string, r io.Reader, subDir string) error {
 
 	tr := tar.NewReader(gzr)
 
+	entriesProcessed := 0
+	bytesProcessed := int64(0)
+	var lastEntryName string
+
 	for {
 		header, err := tr.Next()
 		switch {
 		case err == io.EOF:
+			if entriesProcessed == 0 {
+				return fmt.Errorf("tar archive appears to be empty")
+			}
+			if !GitQuiet {
+				color.Green("Successfully extracted %d entries (content size: %d bytes)", entriesProcessed, bytesProcessed)
+			}
 			return nil
 
 		case err != nil:
-			return err
+			// Provide detailed error context
+			errMsg := fmt.Sprintf("failed to read tar entry #%d", entriesProcessed+1)
+			if lastEntryName != "" {
+				errMsg += fmt.Sprintf(" (after '%s')", lastEntryName)
+			}
+			errMsg += fmt.Sprintf(", extracted %d bytes of content so far", bytesProcessed)
+			return fmt.Errorf("%s: %w", errMsg, err)
 
 		case header == nil:
 			continue
 		}
+		entriesProcessed++
+		lastEntryName = header.Name
 
 		// strip the two first components of the path
 		parts := strings.SplitAfterN(header.Name, "/", 2)
@@ -847,9 +1003,16 @@ func gzipUntar(dst string, r io.Reader, subDir string) error {
 				}
 				defer f.Close()
 
-				// copy over contents
-				if _, err := io.Copy(f, tr); err != nil {
-					return err
+				// copy over contents and track bytes
+				written, err := io.Copy(f, tr)
+				if err != nil {
+					return fmt.Errorf("failed to extract %s: %w", header.Name, err)
+				}
+				bytesProcessed += written
+
+				// Verify we read the expected amount
+				if written != header.Size {
+					return fmt.Errorf("file %s: size mismatch (expected %d bytes, got %d)", header.Name, header.Size, written)
 				}
 				return nil
 			}()
@@ -928,8 +1091,10 @@ func (p *GitPackage) Install(ctx context.Context, name, dir, version string) (st
 			return commitSha, nil
 		}
 		// Fall back to git clone on error
-		color.Yellow("archive install failed: %s", err)
-		color.Yellow("falling back to git clone...")
+		if !GitQuiet {
+			color.Yellow("archive install failed: %v", err)
+			color.Yellow("falling back to git clone...")
+		}
 	}
 
 	// Try to use global cache or fall back to git clone
@@ -982,10 +1147,20 @@ func (p *GitPackage) resolveVersionToCommitSHA(ctx context.Context, version stri
 
 // extractArchiveToDestination extracts a downloaded archive to the destination path
 func (p *GitPackage) extractArchiveToDestination(archiveFilepath, destPath, commitSha string) (string, error) {
+	// Get file info for debugging before opening
+	info, err := os.Stat(archiveFilepath)
+	if err != nil {
+		return "", fmt.Errorf("failed to stat archive file before extraction: %w", err)
+	}
+
+	if !GitQuiet {
+		color.Cyan("Extracting archive: %s (size: %d bytes)", archiveFilepath, info.Size())
+	}
+
 	// Open the archive file
 	ar, err := os.Open(archiveFilepath)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to open archive file: %w", err)
 	}
 	defer ar.Close()
 
@@ -997,7 +1172,16 @@ func (p *GitPackage) extractArchiveToDestination(archiveFilepath, destPath, comm
 	// Extract the sub-directory (if any) from the archive to the final destination
 	err = gzipUntar(destPath, ar, p.Source.Subdir)
 	if err != nil {
-		return "", err
+		// Provide more context about the error
+		if strings.Contains(err.Error(), "unexpected EOF") {
+			// Re-validate the archive to get more details
+			ar.Close()
+			if validateErr := validateGzipFile(archiveFilepath); validateErr != nil {
+				return "", fmt.Errorf("archive validation failed after extraction error - archive may be corrupted or truncated (size: %d bytes): %w", info.Size(), validateErr)
+			}
+			return "", fmt.Errorf("extraction failed with unexpected EOF - archive may be truncated (size: %d bytes): %w", info.Size(), err)
+		}
+		return "", fmt.Errorf("failed to extract archive %s (size: %d bytes): %w", archiveFilepath, info.Size(), err)
 	}
 
 	return commitSha, nil

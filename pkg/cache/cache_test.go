@@ -203,7 +203,7 @@ func TestGlobalRemoteCaches(t *testing.T) {
 	}
 }
 
-// The TestCheckRemoteCache test has been removed as the CheckRemoteCache function 
+// The TestCheckRemoteCache test has been removed as the CheckRemoteCache function
 // was never used in the application and has been removed.
 
 // TestDuplicateURLDeduplication tests that entries with duplicate URLs are deduplicated
@@ -306,19 +306,19 @@ func TestDuplicateURLDeduplication(t *testing.T) {
 	if sameURLEntry == nil {
 		t.Fatalf("Failed to find entry with URL %s", sameURL)
 	}
-	
+
 	if sameURLEntry.Key != entry2.Key {
 		t.Errorf("Expected key %s from second entry, got %s", entry2.Key, sameURLEntry.Key)
 	}
-	
+
 	if sameURLEntry.Path != entry2.Path {
 		t.Errorf("Expected path %s from second entry, got %s", entry2.Path, sameURLEntry.Path)
 	}
-	
+
 	if sameURLEntry.Size != entry2.Size {
 		t.Errorf("Expected size %d from second entry, got %d", entry2.Size, sameURLEntry.Size)
 	}
-	
+
 	// Calculate expected total size: entry2 (replaced entry1) + entry3
 	expectedTotalSize := entry2.Size + entry3.Size
 	if index.TotalSize != expectedTotalSize {

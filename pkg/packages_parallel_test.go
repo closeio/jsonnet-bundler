@@ -235,7 +235,7 @@ func TestParallelEnsureWithNestedDependencies(t *testing.T) {
 
 	// Run parallel ensure
 	result, err := parallelEnsure(direct, vendorDir, tempDir, locks)
-	
+
 	// We expect this to fail when trying to process nested dependencies
 	// because the nested dependency path doesn't exist
 	if err == nil {

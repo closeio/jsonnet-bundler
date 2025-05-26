@@ -5,7 +5,11 @@
       "Bash(make:*)",
       "Bash(git add:*)",
       "Bash(rg:*)",
-      "Bash(go test:*)"
+      "Bash(go test:*)",
+      "Bash(grep:*)",
+      "Bash(chmod:*)",
+      "Bash(rm:*)",
+      "Bash(SKIP_NETWORK_TESTS=\"\" go test -v ./pkg -run TestParallelGitHubArchiveDownloads -timeout 5m)"
     ],
     "deny": []
   }

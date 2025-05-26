@@ -15,6 +15,9 @@
 package pkg
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -103,6 +106,38 @@ func dummyDownloadHandler(content []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Write(content)
 	}
+}
+
+// createValidGzipTar creates a valid gzip tar archive with the given content
+func createValidGzipTar(content string) ([]byte, error) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+
+	// Add a file to the tar
+	header := &tar.Header{
+		Name: "test-repo-main/test.txt",
+		Mode: 0644,
+		Size: int64(len(content)),
+	}
+
+	if err := tw.WriteHeader(header); err != nil {
+		return nil, err
+	}
+
+	if _, err := tw.Write([]byte(content)); err != nil {
+		return nil, err
+	}
+
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+
+	if err := gw.Close(); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
 }
 
 func TestEnsureArchiveCache_FreshCache(t *testing.T) {
@@ -194,8 +229,12 @@ func TestRemoteCache(t *testing.T) {
 	DefaultGlobalCacheDir = globalTmpDir
 
 	// Setup a test server as the upstream source
-	sourceContent := []byte("content from upstream source")
-	sourceServer := httptest.NewServer(dummyDownloadHandler(sourceContent))
+	sourceContent := "content from upstream source"
+	sourceGzipContent, err := createValidGzipTar(sourceContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceServer := httptest.NewServer(dummyDownloadHandler(sourceGzipContent))
 	defer sourceServer.Close()
 	sourceURL := sourceServer.URL
 
@@ -208,7 +247,11 @@ func TestRemoteCache(t *testing.T) {
 	t.Logf("Cache key for URL %s: %s", sourceURL, cacheKey)
 
 	// Setup a remote cache server that will respond to our cache key
-	remoteContent := []byte("content from remote cache")
+	remoteContent := "content from remote cache"
+	remoteGzipContent, err := createValidGzipTar(remoteContent)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var remoteRequests []string // Track which paths were requested
 
 	remoteCacheServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -219,7 +262,7 @@ func TestRemoteCache(t *testing.T) {
 		if strings.Contains(r.URL.Path, "/"+cacheKey+".tar.gz") {
 			t.Logf("REMOTE CACHE sending response for key %s", cacheKey)
 			w.WriteHeader(http.StatusOK)
-			w.Write(remoteContent)
+			w.Write(remoteGzipContent)
 			return
 		}
 
@@ -290,11 +333,11 @@ func TestRemoteCache(t *testing.T) {
 	}
 
 	// The content should be from the remote cache, not the source
-	if string(data) == string(sourceContent) {
-		t.Errorf("Found source content - remote cache was bypassed: %s", string(data))
-	} else if string(data) != string(remoteContent) && !strings.Contains(string(data), "remote cache") {
-		t.Errorf("Unexpected content - neither source nor remote cache: %s", string(data))
-	} else if string(data) == string(remoteContent) {
+	if bytes.Equal(data, sourceGzipContent) {
+		t.Errorf("Found source content - remote cache was bypassed")
+	} else if !bytes.Equal(data, remoteGzipContent) {
+		t.Errorf("Unexpected content - neither source nor remote cache")
+	} else {
 		t.Logf("SUCCESS: Content from remote cache was used")
 	}
 }
@@ -329,8 +372,12 @@ func TestFallbackToSource(t *testing.T) {
 	DefaultGlobalCacheDir = globalTmpDir
 
 	// Setup a test server as the upstream source
-	sourceContent := []byte("content from upstream source")
-	sourceServer := httptest.NewServer(dummyDownloadHandler(sourceContent))
+	sourceContent := "content from upstream source"
+	gzipContent, err := createValidGzipTar(sourceContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceServer := httptest.NewServer(dummyDownloadHandler(gzipContent))
 	defer sourceServer.Close()
 	sourceURL := sourceServer.URL
 
@@ -373,14 +420,15 @@ func TestFallbackToSource(t *testing.T) {
 		t.Fatalf("Expected no error for fallback, got: %v", err)
 	}
 
-	// Read the file and verify it contains content from source
+	// Read and verify the file is a valid gzip
 	data, err := os.ReadFile(archivePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if string(data) != string(sourceContent) {
-		t.Errorf("Expected content from source after fallback, got: %s", string(data))
+	// Verify it's the same gzip content we served
+	if !bytes.Equal(data, gzipContent) {
+		t.Errorf("Expected gzip content from source after fallback")
 	} else {
 		t.Logf("SUCCESS: Content from source was used after fallback")
 	}

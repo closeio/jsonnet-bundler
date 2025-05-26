@@ -254,7 +254,7 @@ func TestObjectExists(t *testing.T) {
 		// First, upload a test object
 		testKey := "test-object-exists.txt"
 		testData := []byte("test content")
-		
+
 		err := client.PutObject(ctx, testKey, testData)
 		if err != nil {
 			t.Fatalf("Failed to create test object: %v", err)
@@ -275,7 +275,7 @@ func TestObjectExists(t *testing.T) {
 		// Upload object without leading slash
 		testKey := "test-slash-object.txt"
 		testData := []byte("test content")
-		
+
 		err := client.PutObject(ctx, testKey, testData)
 		if err != nil {
 			t.Fatalf("Failed to create test object: %v", err)

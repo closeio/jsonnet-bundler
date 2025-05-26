@@ -217,11 +217,11 @@ func TestCopyDirectory(t *testing.T) {
 
 	// Create test directory structure
 	testFiles := map[string]string{
-		"file1.txt":           "content1",
-		"subdir/file2.txt":    "content2",
+		"file1.txt":            "content1",
+		"subdir/file2.txt":     "content2",
 		"subdir/nested/f3.txt": "content3",
-		".git/config":         "git config",
-		"other/file4.txt":     "content4",
+		".git/config":          "git config",
+		"other/file4.txt":      "content4",
 	}
 
 	for path, content := range testFiles {
@@ -328,7 +328,7 @@ func TestInstallFromGitHubArchive(t *testing.T) {
 	// Test with a valid SHA (will fail on archive extraction, but tests the download)
 	ctx := context.Background()
 	_, err = gitPkg.installFromGitHubArchive(ctx, "a804b068e640f9d11680a7e1c9377024d9bd5b57", tempDir, destPath)
-	
+
 	// We expect this to fail at the extraction phase since our mock content isn't a real tar.gz
 	if err == nil {
 		t.Error("Expected error during archive extraction, but got none")
@@ -364,7 +364,7 @@ func TestApplySparseCheckout(t *testing.T) {
 
 	// Apply sparse checkout
 	err = gitPkg.applySparseCheckout(ctx, tempDir, "main")
-	
+
 	// This will fail because there's no actual checkout, but we can verify the config was set
 	sparseCheckoutFile := filepath.Join(tempDir, ".git", "info", "sparse-checkout")
 	content, readErr := os.ReadFile(sparseCheckoutFile)
@@ -419,18 +419,18 @@ func TestCopyToDestination(t *testing.T) {
 	if err := os.WriteFile(testFileInTemp, []byte("temp content"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// This should succeed since tempDir exists and can be moved
 	if err := gitPkg.copyToDestination(tempDir, tempDir, destPath, false); err != nil {
 		t.Errorf("copyToDestination without global cache failed: %v", err)
 	}
-	
+
 	// Verify the file was moved
 	movedFile := filepath.Join(destPath, "temp.txt")
 	if _, err := os.Stat(movedFile); os.IsNotExist(err) {
 		t.Error("Expected file was not moved to destination")
 	}
-	
+
 	// Clean up for next test
 	os.RemoveAll(destPath)
 
