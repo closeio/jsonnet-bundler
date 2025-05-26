@@ -135,9 +135,7 @@ func NewClientFromURL(s3URL string) (*Client, error) {
 	secretKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
 	endpoint := os.Getenv("AWS_ENDPOINT")
 	region := os.Getenv("AWS_REGION")
-	if region == "" {
-		region = "us-east-1" // Default region
-	}
+	// Don't default to us-east-1, let AWS SDK detect the region
 
 	// Path style defaults to false unless env var is set
 	pathStyle := false
@@ -254,9 +252,8 @@ func NewClient(endpoint, bucket, accessKey, secretKey, region string, sslMode, p
 		if envRegion := os.Getenv("AWS_REGION"); envRegion != "" {
 			region = envRegion
 			// fmt.Printf("S3 Client Debug - Using region from environment: %s\n", region)
-		} else {
-			region = "us-east-1" // Default region
 		}
+		// Don't default to us-east-1, let AWS SDK detect the region from config/metadata
 	}
 
 	// Only use environment endpoint if no explicit endpoint was provided
@@ -323,9 +320,7 @@ func NewClientFromEnv(bucket string) (*Client, error) {
 	secretKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
 	endpoint := os.Getenv("AWS_ENDPOINT")
 	region := os.Getenv("AWS_REGION")
-	if region == "" {
-		region = "us-east-1"
-	}
+	// Don't default to us-east-1, let AWS SDK detect the region
 
 	// Path style is determined from environment
 	pathStyle := false
@@ -376,26 +371,31 @@ func (c *Client) initialize(ctx context.Context) error {
 		}
 	}
 
-	// Create custom resolver for endpoint
-	// This is critical for making localstack work with AWS SDK v2
-	customResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-		// Always return the custom endpoint for any service in any region
-		// This is necessary for localstack compatibility
-		endpoint := aws.Endpoint{
-			URL:               c.Endpoint,
-			SigningRegion:     c.Region,
-			HostnameImmutable: true,
-		}
-		// fmt.Printf("S3 Client Debug - Resolving endpoint to URL: '%s', SigningRegion: '%s'\n",
-		// endpoint.URL, endpoint.SigningRegion)
-		return endpoint, nil
-	})
-
 	// Load config using options
 	var configOpts []func(*config.LoadOptions) error
 
-	// Always use custom endpoint resolver if an endpoint is provided
+	// Only use custom endpoint resolver if an endpoint is provided (for localstack, etc.)
 	if c.Endpoint != "" {
+		// Create custom resolver for endpoint
+		// This is critical for making localstack work with AWS SDK v2
+		customResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+			// Always return the custom endpoint for any service in any region
+			// This is necessary for localstack compatibility
+			signingRegion := c.Region
+			if signingRegion == "" {
+				// Use the region passed by the SDK if we don't have one
+				signingRegion = region
+			}
+			endpoint := aws.Endpoint{
+				URL:               c.Endpoint,
+				SigningRegion:     signingRegion,
+				HostnameImmutable: true,
+			}
+			// fmt.Printf("S3 Client Debug - Resolving endpoint to URL: '%s', SigningRegion: '%s'\n",
+			// endpoint.URL, endpoint.SigningRegion)
+			return endpoint, nil
+		})
+
 		// fmt.Printf("S3 Client Debug - Using custom endpoint: %s\n", c.Endpoint)
 		configOpts = append(configOpts, config.WithEndpointResolverWithOptions(customResolver))
 
@@ -403,20 +403,37 @@ func (c *Client) initialize(ctx context.Context) error {
 		configOpts = append(configOpts, config.WithRetryMaxAttempts(1))
 	}
 
-	// Add region
-	configOpts = append(configOpts, config.WithRegion(c.Region))
+	// Add region if explicitly provided
+	if c.Region != "" {
+		configOpts = append(configOpts, config.WithRegion(c.Region))
+	}
+	// If no region provided, LoadDefaultConfig will use the default region chain:
+	// 1. AWS_REGION environment variable
+	// 2. AWS_DEFAULT_REGION environment variable  
+	// 3. Region from shared config file (~/.aws/config)
+	// 4. EC2 instance metadata service (if on EC2)
 
-	// Add credentials if provided
+	// Add credentials if provided, otherwise use default AWS credential chain
 	if c.AccessKey != "" && c.SecretKey != "" {
 		configOpts = append(configOpts, config.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider(c.AccessKey, c.SecretKey, ""),
 		))
 	}
+	// If no credentials provided, LoadDefaultConfig will use the default credential chain:
+	// 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN)
+	// 2. Shared credentials file (~/.aws/credentials)
+	// 3. IAM role (if running on EC2/ECS/Lambda)
 
 	// Load the AWS configuration
 	cfg, err := config.LoadDefaultConfig(ctx, configOpts...)
 	if err != nil {
 		return errors.Wrap(err, "failed to load AWS config")
+	}
+
+	// If region was not explicitly set, store the detected region
+	if c.Region == "" {
+		c.Region = cfg.Region
+		// fmt.Printf("S3 Client Debug - Using detected region: %s\n", c.Region)
 	}
 
 	// Create S3 client with path style config if needed
@@ -597,6 +614,17 @@ func (c *Client) BucketExists(ctx context.Context) (bool, error) {
 		// So we'll check the error message or status code
 		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "404") {
 			return false, nil
+		}
+		// Check for 301 redirect which means wrong region
+		if strings.Contains(err.Error(), "301") || strings.Contains(err.Error(), "MovedPermanently") {
+			// For AWS S3, a 301 error means the bucket exists but is in a different region
+			// We'll print a helpful warning but not fail the check
+			fmt.Printf("WARNING: Failed to check if bucket exists: %v\n", err)
+			fmt.Printf("This usually means the bucket '%s' exists but is in a different region than '%s'.\n", c.Bucket, c.Region)
+			fmt.Printf("Please set the correct region using AWS_REGION environment variable.\n")
+			// Since we can't properly verify the bucket, we'll return an error
+			// This prevents potential issues with trying to use a bucket in the wrong region
+			return false, fmt.Errorf("bucket appears to be in a different region (got 301 redirect)")
 		}
 		return false, errors.Wrap(err, "failed to check bucket existence")
 	}
