@@ -335,8 +335,8 @@ func getCacheInfo(cacheDir string) (*CacheInfo, error) {
 			return nil
 		}
 
-		// Count directories as cache entries
-		if info.IsDir() && filepath.Dir(path) == cacheDir {
+		// Count .tar.gz files as cache entries (same logic as listCacheEntries)
+		if !info.IsDir() && strings.HasSuffix(info.Name(), ".tar.gz") {
 			entries++
 			modTime := info.ModTime()
 
