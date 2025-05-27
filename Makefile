@@ -15,7 +15,7 @@ all: check-license build generate test
 LDFLAGS := '-s -w -extldflags "-static" -X main.Version=${VERSION}'
 cross: clean
 	CGO_ENABLED=0 gox \
-	  -output="$(OUT_DIR)/jb-{{.OS}}-{{.Arch}}" \
+	  -output="$(OUT_DIR)/jb-${VERSION}-{{.OS}}-{{.Arch}}" \
 	  -ldflags=$(LDFLAGS) \
 	  -arch="amd64 arm64" -os="linux" \
 	  -arch="amd64 arm64" -os="darwin" \
