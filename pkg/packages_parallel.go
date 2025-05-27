@@ -67,6 +67,12 @@ func parallelEnsure(direct *deps.Ordered, vendorDir, pathToParentModule string, 
 			downloadSem <- struct{}{}        // Acquire
 			defer func() { <-downloadSem }() // Release
 
+			// Store expected sum before download (same as ensure function)
+			expectedSum := ""
+			if hasLock {
+				expectedSum = locked.Sum
+			}
+
 			// Remove existing directory
 			dir := filepath.Join(vendorDir, dep.Name())
 			os.RemoveAll(dir)
@@ -81,9 +87,9 @@ func parallelEnsure(direct *deps.Ordered, vendorDir, pathToParentModule string, 
 			}
 
 			// Check sum if expected
-			if hasLock && locked.Sum != "" && downloaded.Sum != locked.Sum {
+			if expectedSum != "" && downloaded.Sum != expectedSum {
 				errOnce.Do(func() {
-					firstErr = fmt.Errorf("checksum mismatch for %s. Expected %s but got %s", dep.Name(), locked.Sum, downloaded.Sum)
+					firstErr = fmt.Errorf("checksum mismatch for %s. Expected %s but got %s", dep.Name(), expectedSum, downloaded.Sum)
 				})
 				return
 			}
