@@ -207,15 +207,11 @@ func parallelPopulateRemoteS3Caches(remoteCaches []string, filePath, cacheKey st
 
 			// Get the path prefix from the URL (e.g., /jsonnet-bundler/cache)
 			pathPrefix := strings.TrimPrefix(parsedURL.Path, "/")
-			
+
 			// Construct the full S3 key with path
 			fullS3Key := s3Key
 			if pathPrefix != "" {
 				fullS3Key = pathPrefix + "/" + s3Key
-			}
-
-			if !GitQuiet {
-				color.Green("Uploading to S3 remote cache: s3://%s/%s", bucket, fullS3Key)
 			}
 
 			// Create S3 client using environment variables
@@ -254,9 +250,6 @@ func parallelPopulateRemoteS3Caches(remoteCaches []string, filePath, cacheKey st
 			}
 
 			if objectExists {
-				if !GitQuiet {
-					color.Green("Object already exists in S3 remote cache, skipping upload: s3://%s/%s", bucket, fullS3Key)
-				}
 				return
 			}
 

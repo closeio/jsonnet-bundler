@@ -415,18 +415,11 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 					return errors.Wrap(err, "failed to copy file from global cache")
 				}
 
-				if !GitQuiet {
-					color.Green("Copied file from global cache")
-				}
-
 				// Register in global cache index
 				registerInGlobalCacheIndex(globalArchivePath, archiveUrl)
 
 				// Populate remote S3 caches in parallel
 				if remoteCaches := cache.GetGlobalRemoteCaches(GitQuiet); len(remoteCaches) > 0 {
-					if !GitQuiet {
-						color.Green("Populating remote S3 caches after upstream download...")
-					}
 					parallelPopulateRemoteS3Caches(remoteCaches, globalArchivePath, cacheKey)
 				}
 
@@ -484,9 +477,6 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 						if err := os.MkdirAll(filepath.Dir(globalArchivePath), os.ModePerm); err == nil {
 							err := CopyFile(archiveFilepath, globalArchivePath)
 							if err == nil {
-								if !GitQuiet {
-									color.Green("Copied file to global cache")
-								}
 								registerInGlobalCacheIndex(globalArchivePath, archiveUrl)
 							}
 						}
@@ -532,9 +522,6 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 							if err := os.MkdirAll(filepath.Dir(globalArchivePath), os.ModePerm); err == nil {
 								err := CopyFile(archiveFilepath, globalArchivePath)
 								if err == nil {
-									if !GitQuiet {
-										color.Green("Copied file to global cache")
-									}
 									registerInGlobalCacheIndex(globalArchivePath, archiveUrl)
 								}
 							}
@@ -589,9 +576,6 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 								if err := os.MkdirAll(filepath.Dir(globalArchivePath), os.ModePerm); err == nil {
 									err := CopyFile(archiveFilepath, globalArchivePath)
 									if err == nil {
-										if !GitQuiet {
-											color.Green("Copied file to global cache")
-										}
 										registerInGlobalCacheIndex(globalArchivePath, archiveUrl)
 									}
 								}
@@ -643,10 +627,6 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 			err := CopyFile(globalArchivePath, archiveFilepath)
 			if err != nil {
 				return errors.Wrap(err, "failed to copy file from global cache")
-			}
-
-			if !GitQuiet {
-				color.Green("Copied file from global cache")
 			}
 
 			return nil
@@ -855,11 +835,8 @@ func registerInGlobalCacheIndex(filePath, url string) {
 	addedKeys[cacheKey] = true // Mark the new entry key as already added
 
 	// First pass: Process existing entries and filter duplicates
-	entryExists := false
 	for _, existingEntry := range index.Entries {
 		if existingEntry.Key == cacheKey {
-			// Mark that we found the entry, but don't add it to newEntries yet
-			entryExists = true
 			continue // Skip adding the old entry, we'll add the new one later
 		}
 
@@ -908,14 +885,6 @@ func registerInGlobalCacheIndex(filePath, url string) {
 		}
 		return
 	}
-
-	if !GitQuiet {
-		if entryExists {
-			color.Green("Updated file in global cache index: %s.tar.gz", cacheKey)
-		} else {
-			color.Green("Added file to global cache index: %s.tar.gz", cacheKey)
-		}
-	}
 }
 
 func gzipUntar(dst string, r io.Reader, subDir string) error {
@@ -943,9 +912,6 @@ func gzipUntar(dst string, r io.Reader, subDir string) error {
 		case err == io.EOF:
 			if entriesProcessed == 0 {
 				return fmt.Errorf("tar archive appears to be empty")
-			}
-			if !GitQuiet {
-				color.Green("Successfully extracted %d entries (content size: %d bytes)", entriesProcessed, bytesProcessed)
 			}
 			return nil
 
@@ -986,7 +952,6 @@ func gzipUntar(dst string, r io.Reader, subDir string) error {
 			target = filepath.Join(dst, pathWithoutRepo)
 		}
 
-
 		// check the file type
 		switch header.Typeflag {
 
@@ -1019,12 +984,12 @@ func gzipUntar(dst string, r io.Reader, subDir string) error {
 				if written != header.Size {
 					return fmt.Errorf("file %s: size mismatch (expected %d bytes, got %d)", header.Name, header.Size, written)
 				}
-				
+
 				// Ensure data is written to disk before closing
 				if err := f.Sync(); err != nil {
 					return fmt.Errorf("failed to sync file %s: %w", header.Name, err)
 				}
-				
+
 				return nil
 			}()
 
@@ -1162,10 +1127,6 @@ func (p *GitPackage) extractArchiveToDestination(archiveFilepath, destPath, comm
 	info, err := os.Stat(archiveFilepath)
 	if err != nil {
 		return "", fmt.Errorf("failed to stat archive file before extraction: %w", err)
-	}
-
-	if !GitQuiet {
-		color.Cyan("Extracting archive: %s (size: %d bytes)", archiveFilepath, info.Size())
 	}
 
 	// Open the archive file
