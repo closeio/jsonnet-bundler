@@ -925,7 +925,11 @@ func gzipUntar(dst string, r io.Reader, subDir string) error {
 	}
 	defer gzr.Close()
 
-	subDirWithoutSlash := strings.TrimPrefix(subDir, "/")
+	// Clean up subdir - remove leading slash and ensure trailing slash
+	subDirClean := strings.TrimPrefix(subDir, "/")
+	if subDirClean != "" && !strings.HasSuffix(subDirClean, "/") {
+		subDirClean = subDirClean + "/"
+	}
 
 	tr := tar.NewReader(gzr)
 
@@ -960,27 +964,28 @@ func gzipUntar(dst string, r io.Reader, subDir string) error {
 		entriesProcessed++
 		lastEntryName = header.Name
 
-		// strip the two first components of the path
-		parts := strings.SplitAfterN(header.Name, "/", 2)
+		// strip the first component (repo name) from the path
+		parts := strings.SplitN(header.Name, "/", 2)
 		if len(parts) < 2 {
 			continue
 		}
-		suffix := parts[1]
-		prefix := dst
+		pathWithoutRepo := parts[1]
 
-		// reconstruct the target parh for the archive entry
-		target := filepath.Join(prefix, suffix)
-
-		// if subdir is provided and target is not under it, skip it
-		subDirPath := filepath.Join(prefix, subDir)
-		if subDir != "" && !strings.HasPrefix(target, subDirPath) {
-			continue
+		// Handle subdirectory filtering
+		var target string
+		if subDirClean != "" {
+			// Check if this file is within our subdirectory
+			if !strings.HasPrefix(pathWithoutRepo, subDirClean) {
+				continue
+			}
+			// Strip the subdirectory prefix to get the relative path within it
+			relPath := strings.TrimPrefix(pathWithoutRepo, subDirClean)
+			target = filepath.Join(dst, relPath)
+		} else {
+			// No subdirectory specified, use the full path (minus repo name)
+			target = filepath.Join(dst, pathWithoutRepo)
 		}
 
-		// strip the subdir part if present
-		if subDir != "" {
-			target = filepath.Join(prefix, strings.TrimPrefix(suffix, subDirWithoutSlash))
-		}
 
 		// check the file type
 		switch header.Typeflag {
@@ -1014,6 +1019,12 @@ func gzipUntar(dst string, r io.Reader, subDir string) error {
 				if written != header.Size {
 					return fmt.Errorf("file %s: size mismatch (expected %d bytes, got %d)", header.Name, header.Size, written)
 				}
+				
+				// Ensure data is written to disk before closing
+				if err := f.Sync(); err != nil {
+					return fmt.Errorf("failed to sync file %s: %w", header.Name, err)
+				}
+				
 				return nil
 			}()
 

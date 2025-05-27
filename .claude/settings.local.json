@@ -13,7 +13,9 @@
       "Bash(JB_PARALLEL_DOWNLOADS=true make test-integration 2 >& 1)",
       "Bash(go fmt:*)",
       "Bash(go vet:*)",
-      "Bash(go run:*)"
+      "Bash(go run:*)",
+      "Bash(cp:*)",
+      "Bash(sed:*)"
     ],
     "deny": []
   }

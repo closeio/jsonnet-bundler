@@ -51,13 +51,17 @@ func parallelEnsure(direct *deps.Ordered, vendorDir, pathToParentModule string, 
 
 		// Check if already locked and intact
 		if present {
-			d.Version = l.Version
+			// Create a copy of the dependency to avoid modifying the original
+			depCopy := d
+			depCopy.Version = l.Version
 			if check(l, vendorDir) {
 				depsMutex.Lock()
-				resultDeps.Set(d.Name(), l)
+				resultDeps.Set(depCopy.Name(), l)
 				depsMutex.Unlock()
 				continue
 			}
+			// Use the copy with the locked version
+			d = depCopy
 		}
 
 		downloadWg.Add(1)
