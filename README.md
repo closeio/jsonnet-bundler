@@ -10,7 +10,7 @@ The jsonnet-bundler is a package manager for [Jsonnet](http://jsonnet.org/).
 ```
 go install -a github.com/jsonnet-bundler/jsonnet-bundler/cmd/jb@latest
 ```
-**NOTE**: please use a recent Go version to do this, ideally Go 1.13 or greater.
+**NOTE**: please use a recent Go version to do this, ideally Go 1.23 or greater.
 
 This will put `jb` in `$(go env GOPATH)/bin`. If you encounter the error
 `jb: command not found` after installation then you may need to add that directory to your `$PATH` as shown [in their docs](https://golang.org/doc/code.html#GOPATH).
@@ -182,7 +182,7 @@ Flags:
   -h, --help             Show context-sensitive help (also try --help-long and
                          --help-man).
       --version          Show application version.
-      --jsonnetpkg-home="vendor"  
+      --jsonnetpkg-home="vendor"
                          The directory used to cache packages in.
   -q, --quiet            Suppress any output from git command.
       --no-global-cache  Disable the global cache at ~/.cache/jb.

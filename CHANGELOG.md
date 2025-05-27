@@ -32,7 +32,7 @@
 
 - **[ENHANCEMENT]** Add arm64 support for macOS binary compilation
 - **[ENHANCEMENT]** Enable GitHub Actions for CI/CD
-- **[ENHANCEMENT]** Update to support only the latest two maintained Go releases (1.23, 1.24)
+- **[ENHANCEMENT]** Update to support only the latest Go release
 - **[ENHANCEMENT]** Ensure stable transitive dependencies
 - **[ENHANCEMENT]** Disable Windows build and ARM 32-bit for Darwin
 
