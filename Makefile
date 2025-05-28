@@ -1,4 +1,4 @@
-.PHONY: all check-license crossbuild build install test generate embedmd
+.PHONY: all check-license cross build build-race static install test generate embedmd
 
 SHELL=/bin/bash
 
@@ -27,6 +27,9 @@ static:
 build:
 	CGO_ENABLED=0 go build -ldflags='-X main.Version=${VERSION}' -o $(OUT_DIR)/$(BIN) ./cmd/$(BIN)
 
+build-race:
+	go build -race -ldflags='-X main.Version=${VERSION}' -o $(OUT_DIR)/$(BIN)-race ./cmd/$(BIN)
+
 install: static
 	@echo ">> copying $(BIN) into $(GOPATH)/bin/$(BIN)"
 	cp $(OUT_DIR)/$(BIN) $(GOPATH)/bin/$(BIN)
@@ -34,11 +37,11 @@ install: static
 # Tests
 test:
 	@echo ">> running all unit tests"
-	go test -v $(PKGS)
+	go test -race -v $(PKGS)
 
 test-integration:
 	@echo ">> running all integration tests"
-	go test -v -tags=integration $(PKGS)
+	go test -race -v -tags=integration $(PKGS)
 
 # Documentation
 generate: embedmd
@@ -56,6 +59,3 @@ embedmd:
 # Other
 clean:
 	rm -rf $(OUT_DIR) $(BIN)
-
-drone:
-	drone jsonnet --format
