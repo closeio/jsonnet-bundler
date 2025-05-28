@@ -165,12 +165,6 @@ func validateGzipFile(filepath string) error {
 		return fmt.Errorf("tar archive is empty")
 	}
 
-	// Archive is valid - we successfully read through all entries
-	if !GitQuiet {
-		color.Green("Archive validation passed (size: %d bytes, entries: %d, content size: %d bytes)",
-			info.Size(), entriesProcessed, totalSize)
-	}
-
 	return nil
 }
 
@@ -239,12 +233,6 @@ func downloadGitHubArchive(filepath string, urlStr string) error {
 			// Success - proceed with download
 			defer resp.Body.Close()
 
-			// Get ETag for integrity verification if available
-			etag := resp.Header.Get("ETag")
-			if etag != "" && !GitQuiet {
-				color.Cyan("Download ETag: %s", etag)
-			}
-
 			// Create the file
 			out, err := os.Create(filepath)
 			if err != nil {
@@ -267,12 +255,6 @@ func downloadGitHubArchive(filepath string, urlStr string) error {
 					color.Yellow("Download attempt %d/%d failed during file write: %v", attempt, maxRetries, err)
 				}
 				continue
-			}
-
-			// Calculate file hash
-			fileHash := fmt.Sprintf("%x", hasher.Sum(nil))
-			if !GitQuiet {
-				color.Cyan("Downloaded file SHA256: %s", fileHash)
 			}
 
 			// Verify file size if Content-Length was provided
