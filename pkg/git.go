@@ -344,6 +344,35 @@ func getGlobalCacheDir() (string, error) {
 	return cacheDir, nil
 }
 
+// downloadDirectlyToDestination downloads the archive directly to the destination path
+// when global cache is disabled or failed
+func downloadDirectlyToDestination(archiveFilepath, archiveUrl, cacheKey string) error {
+	if !GitQuiet {
+		color.Cyan("DOWNLOADING directly to destination: %s", archiveUrl)
+	}
+
+	// Ensure destination directory exists
+	if err := os.MkdirAll(filepath.Dir(archiveFilepath), os.ModePerm); err != nil {
+		return errors.Wrap(err, "failed to create destination directory")
+	}
+
+	if err := downloadGitHubArchive(archiveFilepath, archiveUrl); err != nil {
+		// Return the error directly, which will include detailed S3 URL components
+		// if it was an S3 error from our enhanced error handling in downloadGitHubArchive
+		return err
+	}
+
+	// Populate remote S3 caches in parallel
+	if remoteCaches := cache.GetGlobalRemoteCaches(GitQuiet); len(remoteCaches) > 0 {
+		if !GitQuiet {
+			color.Green("Populating remote S3 caches after upstream download...")
+		}
+		parallelPopulateRemoteS3Caches(remoteCaches, archiveFilepath, cacheKey)
+	}
+
+	return nil
+}
+
 // ensureArchiveCache ensures the file exists at the destination path,
 // checking in this order:
 // 1. Global cache
@@ -585,7 +614,7 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 					color.Yellow("WARNING: Could not create global cache directory: %v", err)
 				}
 				// Fall back to downloading directly to destination
-				goto DownloadToDestination
+				return downloadDirectlyToDestination(archiveFilepath, archiveUrl, cacheKey)
 			}
 
 			// Download to global cache
@@ -595,7 +624,7 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 					color.Yellow("WARNING: Could not download to global cache: %v", err)
 				}
 				// Fall back to downloading directly to destination
-				goto DownloadToDestination
+				return downloadDirectlyToDestination(archiveFilepath, archiveUrl, cacheKey)
 			}
 
 			// Register in global cache index
@@ -615,32 +644,8 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 		}
 	}
 
-DownloadToDestination:
-	// Step 4 (alternative): Global cache is disabled or failed, download directly to destination
-	if !GitQuiet {
-		color.Cyan("DOWNLOADING directly to destination: %s", archiveUrl)
-	}
-
-	// Ensure destination directory exists
-	if err := os.MkdirAll(filepath.Dir(archiveFilepath), os.ModePerm); err != nil {
-		return errors.Wrap(err, "failed to create destination directory")
-	}
-
-	if err := downloadGitHubArchive(archiveFilepath, archiveUrl); err != nil {
-		// Return the error directly, which will include detailed S3 URL components
-		// if it was an S3 error from our enhanced error handling in downloadGitHubArchive
-		return err
-	}
-
-	// Populate remote S3 caches in parallel
-	if remoteCaches := cache.GetGlobalRemoteCaches(GitQuiet); len(remoteCaches) > 0 {
-		if !GitQuiet {
-			color.Green("Populating remote S3 caches after upstream download...")
-		}
-		parallelPopulateRemoteS3Caches(remoteCaches, archiveFilepath, cacheKey)
-	}
-
-	return nil
+	// Step 4 (alternative): Global cache is disabled, download directly to destination
+	return downloadDirectlyToDestination(archiveFilepath, archiveUrl, cacheKey)
 }
 
 // registerInGlobalCacheIndex adds an entry to the global cache index
