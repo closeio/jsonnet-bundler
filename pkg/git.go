@@ -656,6 +656,14 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 				return errors.Wrap(err, "failed to copy file from global cache")
 			}
 
+			// Populate remote S3 caches in parallel after successful download
+			if remoteCaches := cache.GetGlobalRemoteCaches(GetGitQuiet()); len(remoteCaches) > 0 {
+				if !GetGitQuiet() {
+					color.Green("Populating remote S3 caches after upstream download...")
+				}
+				parallelPopulateRemoteS3Caches(remoteCaches, globalArchivePath, cacheKey)
+			}
+
 			return nil
 		}
 	}
