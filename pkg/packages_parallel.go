@@ -169,8 +169,15 @@ func parallelEnsure(direct *deps.Ordered, vendorDir, pathToParentModule string, 
 	}
 
 	// Queue nested dependency tasks
-	for _, k := range resultDeps.Keys() {
+	depsMutex.Lock()
+	keys := resultDeps.Keys()
+	depsMutex.Unlock()
+	
+	for _, k := range keys {
+		depsMutex.Lock()
 		d, _ := resultDeps.Get(k)
+		depsMutex.Unlock()
+		
 		if d.Single {
 			continue // Skip dependencies that don't want nested ones
 		}
