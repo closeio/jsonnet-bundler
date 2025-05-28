@@ -536,7 +536,7 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 							err := s3.SaveObjectToFile(s3URL, archiveFilepath, GetGitQuiet())
 							if err != nil {
 								if !GetGitQuiet() {
-									color.Yellow("S3 CACHE MISS: Downloading from upstream")
+									color.Yellow("S3 CACHE MISS (%s): Downloading from upstream", s3URL)
 								}
 								continue
 							}
