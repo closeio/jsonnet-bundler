@@ -214,7 +214,7 @@ func parallelEnsure(direct *deps.Ordered, vendorDir, pathToParentModule string, 
 
 // EnsureParallel is the public interface to the parallel ensure function
 func EnsureParallel(direct *deps.Ordered, vendorDir, pathToParentModule string, locks *deps.Ordered) (*deps.Ordered, error) {
-	if !GitQuiet {
+	if !GetGitQuiet() {
 		color.Cyan("Using parallel package downloads...")
 	}
 	return parallelEnsure(direct, vendorDir, pathToParentModule, locks)

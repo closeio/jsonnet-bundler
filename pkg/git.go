@@ -33,6 +33,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fatih/color"
@@ -94,7 +95,8 @@ func NewGitPackage(source *deps.Git) Interface {
 }
 
 var (
-	GitQuiet = false
+	// gitQuiet is accessed atomically to avoid race conditions
+	gitQuiet atomic.Bool
 	// GlobalCacheEnabled controls whether to use a global cache
 	GlobalCacheEnabled = true
 	// DefaultGlobalCacheDir is the default location for the global cache
@@ -106,6 +108,20 @@ var (
 	archiveCacheMutexes     = make(map[string]*sync.Mutex)
 	archiveCacheMutexesLock sync.Mutex
 )
+
+// GitQuiet is a helper to access the atomic gitQuiet variable
+var GitQuiet = false
+
+// SetGitQuiet safely sets the gitQuiet value
+func SetGitQuiet(quiet bool) {
+	GitQuiet = quiet
+	gitQuiet.Store(quiet)
+}
+
+// GetGitQuiet safely gets the gitQuiet value
+func GetGitQuiet() bool {
+	return gitQuiet.Load()
+}
 
 // validateGzipFile checks if a file is a valid gzip file by reading through the entire archive
 func validateGzipFile(filepath string) error {
@@ -171,12 +187,12 @@ func validateGzipFile(filepath string) error {
 func downloadGitHubArchive(filepath string, urlStr string) error {
 	// Check if this is an S3 URL
 	if s3.IsS3URL(urlStr) {
-		if !GitQuiet {
+		if !GetGitQuiet() {
 			color.Cyan("S3 GET %s", urlStr)
 		}
 
 		// Download directly from S3 to file
-		err := s3.SaveObjectToFile(urlStr, filepath, GitQuiet)
+		err := s3.SaveObjectToFile(urlStr, filepath, GetGitQuiet())
 		if err != nil {
 			// Parse the S3 URL to provide more debug information
 			parsedURL, parseErr := url.Parse(urlStr)
@@ -208,7 +224,7 @@ func downloadGitHubArchive(filepath string, urlStr string) error {
 		// Add exponential backoff for retries
 		if attempt > 1 {
 			backoffTime := time.Duration(attempt-1) * time.Second
-			if !GitQuiet {
+			if !GetGitQuiet() {
 				color.Yellow("Retrying download (attempt %d/%d) after %v...", attempt, maxRetries, backoffTime)
 			}
 			time.Sleep(backoffTime)
@@ -218,13 +234,13 @@ func downloadGitHubArchive(filepath string, urlStr string) error {
 		resp, err := http.Get(urlStr)
 		if err != nil {
 			lastErr = err
-			if !GitQuiet {
+			if !GetGitQuiet() {
 				color.Yellow("Download attempt %d/%d failed: %v", attempt, maxRetries, err)
 			}
 			continue
 		}
 
-		if !GitQuiet {
+		if !GetGitQuiet() {
 			color.Cyan("GET %s %d (attempt %d/%d)", urlStr, resp.StatusCode, attempt, maxRetries)
 		}
 
@@ -251,7 +267,7 @@ func downloadGitHubArchive(filepath string, urlStr string) error {
 			if err != nil {
 				os.Remove(filepath) // Clean up partial file
 				lastErr = err
-				if !GitQuiet {
+				if !GetGitQuiet() {
 					color.Yellow("Download attempt %d/%d failed during file write: %v", attempt, maxRetries, err)
 				}
 				continue
@@ -261,7 +277,7 @@ func downloadGitHubArchive(filepath string, urlStr string) error {
 			if contentLength := resp.ContentLength; contentLength > 0 && written != contentLength {
 				os.Remove(filepath)
 				lastErr = fmt.Errorf("incomplete download: expected %d bytes, got %d", contentLength, written)
-				if !GitQuiet {
+				if !GetGitQuiet() {
 					color.Yellow("Download attempt %d/%d incomplete: %v", attempt, maxRetries, lastErr)
 				}
 				continue
@@ -276,7 +292,7 @@ func downloadGitHubArchive(filepath string, urlStr string) error {
 				} else {
 					lastErr = fmt.Errorf("invalid archive: %w", err)
 				}
-				if !GitQuiet {
+				if !GetGitQuiet() {
 					color.Yellow("Download attempt %d/%d produced invalid archive: %v", attempt, maxRetries, err)
 				}
 				continue
@@ -288,7 +304,7 @@ func downloadGitHubArchive(filepath string, urlStr string) error {
 			// Server error or rate limit - worth retrying
 			resp.Body.Close()
 			lastErr = fmt.Errorf("unexpected status code %d", resp.StatusCode)
-			if !GitQuiet {
+			if !GetGitQuiet() {
 				color.Yellow("Download attempt %d/%d failed with status %d", attempt, maxRetries, resp.StatusCode)
 			}
 			continue
@@ -310,7 +326,7 @@ func downloadGitHubArchive(filepath string, urlStr string) error {
 func getGlobalCacheDir() (string, error) {
 	// Check if a custom cache directory is specified
 	if envCacheDir := os.Getenv("JB_CACHE_DIR"); envCacheDir != "" {
-		if !GitQuiet {
+		if !GetGitQuiet() {
 			color.Cyan("Using environment cache directory: %s", envCacheDir)
 		}
 
@@ -347,7 +363,7 @@ func getGlobalCacheDir() (string, error) {
 // downloadDirectlyToDestination downloads the archive directly to the destination path
 // when global cache is disabled or failed
 func downloadDirectlyToDestination(archiveFilepath, archiveUrl, cacheKey string) error {
-	if !GitQuiet {
+	if !GetGitQuiet() {
 		color.Cyan("DOWNLOADING directly to destination: %s", archiveUrl)
 	}
 
@@ -363,8 +379,8 @@ func downloadDirectlyToDestination(archiveFilepath, archiveUrl, cacheKey string)
 	}
 
 	// Populate remote S3 caches in parallel
-	if remoteCaches := cache.GetGlobalRemoteCaches(GitQuiet); len(remoteCaches) > 0 {
-		if !GitQuiet {
+	if remoteCaches := cache.GetGlobalRemoteCaches(GetGitQuiet()); len(remoteCaches) > 0 {
+		if !GetGitQuiet() {
 			color.Green("Populating remote S3 caches after upstream download...")
 		}
 		parallelPopulateRemoteS3Caches(remoteCaches, archiveFilepath, cacheKey)
@@ -389,7 +405,7 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 
 	// Check if file already exists at the destination (double-check after acquiring lock)
 	if _, err := os.Stat(archiveFilepath); err == nil {
-		if !GitQuiet {
+		if !GetGitQuiet() {
 			color.Green("FILE ALREADY EXISTS %s", archiveFilepath)
 		}
 		return nil
@@ -402,7 +418,7 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 		globalCacheDir, err := getGlobalCacheDir()
 		if err != nil {
 			// If we can't access the global cache, log warning and download directly
-			if !GitQuiet {
+			if !GetGitQuiet() {
 				color.Yellow("WARNING: Could not access global cache: %v", err)
 			}
 		} else {
@@ -411,7 +427,7 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 
 			// Check if file exists in global cache
 			if _, err := os.Stat(globalArchivePath); err == nil {
-				if !GitQuiet {
+				if !GetGitQuiet() {
 					color.Cyan("GLOBAL CACHE HIT %s", globalArchivePath)
 				}
 
@@ -430,7 +446,7 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 				registerInGlobalCacheIndex(globalArchivePath, archiveUrl)
 
 				// Populate remote S3 caches in parallel
-				if remoteCaches := cache.GetGlobalRemoteCaches(GitQuiet); len(remoteCaches) > 0 {
+				if remoteCaches := cache.GetGlobalRemoteCaches(GetGitQuiet()); len(remoteCaches) > 0 {
 					parallelPopulateRemoteS3Caches(remoteCaches, globalArchivePath, cacheKey)
 				}
 
@@ -443,7 +459,7 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 			var remoteCaches []string
 
 			if indexData, err := os.ReadFile(indexPath); err == nil {
-				// if !GitQuiet {
+				// if !GetGitQuiet() {
 				// 	color.Cyan("Looking for remote caches in: %s", indexPath)
 				// }
 
@@ -500,7 +516,7 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 						// Parse the remote URL
 						cacheBaseURL, err := url.Parse(remoteURL)
 						if err != nil {
-							if !GitQuiet {
+							if !GetGitQuiet() {
 								color.Yellow("Invalid remote cache URL: %v", err)
 							}
 							continue
@@ -517,15 +533,15 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 							}
 
 							// Download directly to the destination file
-							err := s3.SaveObjectToFile(s3URL, archiveFilepath, GitQuiet)
+							err := s3.SaveObjectToFile(s3URL, archiveFilepath, GetGitQuiet())
 							if err != nil {
-								if !GitQuiet {
+								if !GetGitQuiet() {
 									color.Yellow("S3 CACHE MISS: Downloading from upstream")
 								}
 								continue
 							}
 
-							if !GitQuiet {
+							if !GetGitQuiet() {
 								color.Cyan("S3 REMOTE CACHE HIT: %s", s3URL)
 							}
 
@@ -543,14 +559,14 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 							cacheRequestURL := *cacheBaseURL // Copy the URL
 							cacheRequestURL.Path = path.Join(cacheRequestURL.Path, cacheKey+".tar.gz")
 
-							if !GitQuiet {
+							if !GetGitQuiet() {
 								color.Cyan("Trying remote cache: %s", cacheRequestURL.String())
 							}
 
 							// Send GET request to remote cache
 							resp, err := http.Get(cacheRequestURL.String())
 							if err != nil {
-								if !GitQuiet {
+								if !GetGitQuiet() {
 									color.Yellow("Remote cache error: %v", err)
 								}
 								continue
@@ -558,7 +574,7 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 
 							// Check for cache hit
 							if resp.StatusCode == http.StatusOK {
-								if !GitQuiet {
+								if !GetGitQuiet() {
 									color.Cyan("REMOTE CACHE HIT: %s", remoteURL)
 								}
 
@@ -598,19 +614,19 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 							resp.Body.Close()
 						}
 					}
-				} else if !GitQuiet {
+				} else if !GetGitQuiet() {
 					color.Yellow("No remote caches found in global index")
 				}
 			}
 
 			// Step 3: Not in any cache, download to global cache and destination
-			if !GitQuiet {
+			if !GetGitQuiet() {
 				color.Cyan("DOWNLOADING to global cache: %s", archiveUrl)
 			}
 
 			// First ensure global cache directory exists
 			if err := os.MkdirAll(filepath.Dir(globalArchivePath), os.ModePerm); err != nil {
-				if !GitQuiet {
+				if !GetGitQuiet() {
 					color.Yellow("WARNING: Could not create global cache directory: %v", err)
 				}
 				// Fall back to downloading directly to destination
@@ -619,7 +635,7 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 
 			// Download to global cache
 			if err := downloadGitHubArchive(globalArchivePath, archiveUrl); err != nil {
-				if !GitQuiet {
+				if !GetGitQuiet() {
 					// If this is an S3 error, the detailed URL components are already in the error message
 					color.Yellow("WARNING: Could not download to global cache: %v", err)
 				}
@@ -660,7 +676,7 @@ func registerInGlobalCacheIndex(filePath, url string) {
 	// Get the global cache directory
 	globalCacheDir, err := getGlobalCacheDir()
 	if err != nil {
-		if !GitQuiet {
+		if !GetGitQuiet() {
 			color.Yellow("WARNING: Could not access global cache: %v", err)
 		}
 		return
@@ -669,7 +685,7 @@ func registerInGlobalCacheIndex(filePath, url string) {
 	// Get file stats
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
-		if !GitQuiet {
+		if !GetGitQuiet() {
 			color.Yellow("WARNING: Could not register global cache entry: %v", err)
 		}
 		return
@@ -716,7 +732,7 @@ func registerInGlobalCacheIndex(filePath, url string) {
 	data, err := os.ReadFile(indexPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			if !GitQuiet {
+			if !GetGitQuiet() {
 				color.Yellow("WARNING: Failed to read global cache index: %v", err)
 			}
 			return
@@ -801,7 +817,7 @@ func registerInGlobalCacheIndex(filePath, url string) {
 					}
 				}
 			} else {
-				if !GitQuiet {
+				if !GetGitQuiet() {
 					color.Yellow("WARNING: Failed to parse global cache index, creating new one: %v", err)
 				}
 				// Create new index
@@ -831,7 +847,7 @@ func registerInGlobalCacheIndex(filePath, url string) {
 		if !addedKeys[existingEntry.Key] {
 			newEntries = append(newEntries, existingEntry)
 			addedKeys[existingEntry.Key] = true
-		} else if !GitQuiet {
+		} else if !GetGitQuiet() {
 			color.Yellow("Removing duplicate cache entry with key: %s", existingEntry.Key)
 		}
 	}
@@ -851,7 +867,7 @@ func registerInGlobalCacheIndex(filePath, url string) {
 	// Save index
 	data, err = json.MarshalIndent(index, "", "  ")
 	if err != nil {
-		if !GitQuiet {
+		if !GetGitQuiet() {
 			color.Yellow("WARNING: Failed to marshal global cache index: %v", err)
 		}
 		return
@@ -859,7 +875,7 @@ func registerInGlobalCacheIndex(filePath, url string) {
 
 	// Create cache directory if it doesn't exist
 	if err := os.MkdirAll(globalCacheDir, os.ModePerm); err != nil {
-		if !GitQuiet {
+		if !GetGitQuiet() {
 			color.Yellow("WARNING: Failed to create global cache directory: %v", err)
 		}
 		return
@@ -867,7 +883,7 @@ func registerInGlobalCacheIndex(filePath, url string) {
 
 	// Write to file
 	if err := os.WriteFile(indexPath, data, 0644); err != nil {
-		if !GitQuiet {
+		if !GetGitQuiet() {
 			color.Yellow("WARNING: Failed to write global cache index: %v", err)
 		}
 		return
@@ -1054,7 +1070,7 @@ func (p *GitPackage) Install(ctx context.Context, name, dir, version string) (st
 			return commitSha, nil
 		}
 		// Fall back to git clone on error
-		if !GitQuiet {
+		if !GetGitQuiet() {
 			color.Yellow("archive install failed: %v", err)
 			color.Yellow("falling back to git clone...")
 		}
@@ -1195,7 +1211,7 @@ func gitCmd(ctx context.Context, workingDir string, args ...string) *exec.Cmd {
 func (p *GitPackage) tryUseGlobalCache(ctx context.Context, globalCacheDir, version string) (workDir string, commitHash string, useCache bool) {
 	// Check if global cache already contains this repository
 	if _, err := os.Stat(globalCacheDir); err == nil {
-		if !GitQuiet {
+		if !GetGitQuiet() {
 			color.Cyan("GLOBAL GIT CACHE HIT: %s", globalCacheDir)
 		}
 
@@ -1206,7 +1222,7 @@ func (p *GitPackage) tryUseGlobalCache(ctx context.Context, globalCacheDir, vers
 		}
 
 		// Update the cache if checkout failed
-		if !GitQuiet {
+		if !GetGitQuiet() {
 			color.Yellow("Version not found in global cache, updating: %s", version)
 		}
 
@@ -1260,7 +1276,7 @@ func (p *GitPackage) updateGlobalCache(ctx context.Context, cacheDir string) err
 
 // initializeGlobalCache initializes a new global cache repository
 func (p *GitPackage) initializeGlobalCache(ctx context.Context, cacheDir, version string) (string, error) {
-	if !GitQuiet {
+	if !GetGitQuiet() {
 		color.Cyan("INITIALIZING GLOBAL GIT CACHE: %s", cacheDir)
 	}
 
@@ -1292,7 +1308,7 @@ func (p *GitPackage) initializeGlobalCache(ctx context.Context, cacheDir, versio
 
 // cloneToDirectory clones the repository to a specific directory
 func (p *GitPackage) cloneToDirectory(ctx context.Context, dir, version string) (string, error) {
-	if !GitQuiet {
+	if !GetGitQuiet() {
 		color.Cyan("CLONING TO TEMPORARY DIRECTORY: %s", dir)
 	}
 

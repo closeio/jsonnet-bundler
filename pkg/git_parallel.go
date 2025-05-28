@@ -130,28 +130,35 @@ func parallelCheckRemoteCaches(remoteCaches []string, cacheKey string) (string, 
 
 	// Collect results and return the first successful one
 	var tempFiles []string
+	var tempFilesMutex sync.Mutex
 	defer func() {
 		// Clean up any remaining temp files
+		tempFilesMutex.Lock()
 		for _, tf := range tempFiles {
 			os.Remove(tf)
 		}
+		tempFilesMutex.Unlock()
 	}()
 
 	for result := range resultChan {
 		if result.success {
-			if !GitQuiet {
+			if !GetGitQuiet() {
 				color.Cyan("REMOTE CACHE HIT (parallel): %s", result.cacheURL)
 			}
 			// Remove this file from cleanup list
+			tempFilesMutex.Lock()
 			for i, tf := range tempFiles {
 				if tf == result.tempPath {
 					tempFiles = append(tempFiles[:i], tempFiles[i+1:]...)
 					break
 				}
 			}
+			tempFilesMutex.Unlock()
 			return result.tempPath, nil
 		} else if result.tempPath != "" {
+			tempFilesMutex.Lock()
 			tempFiles = append(tempFiles, result.tempPath)
+			tempFilesMutex.Unlock()
 		}
 	}
 
@@ -163,7 +170,7 @@ func parallelPopulateRemoteS3Caches(remoteCaches []string, filePath, cacheKey st
 	// Get file stats for verification
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
-		if !GitQuiet {
+		if !GetGitQuiet() {
 			color.Yellow("WARNING: Failed to get file info for S3 upload: %v", err)
 		}
 		return
@@ -171,7 +178,7 @@ func parallelPopulateRemoteS3Caches(remoteCaches []string, filePath, cacheKey st
 
 	// Skip directories
 	if fileInfo.IsDir() {
-		if !GitQuiet {
+		if !GetGitQuiet() {
 			color.Yellow("WARNING: Cannot upload directory to S3 cache: %s", filePath)
 		}
 		return
@@ -196,7 +203,7 @@ func parallelPopulateRemoteS3Caches(remoteCaches []string, filePath, cacheKey st
 			// Extract bucket from S3 URL
 			parsedURL, parseErr := url.Parse(cacheURL)
 			if parseErr != nil {
-				if !GitQuiet {
+				if !GetGitQuiet() {
 					color.Yellow("WARNING: Failed to parse S3 URL %s: %v", cacheURL, parseErr)
 				}
 				return
@@ -217,7 +224,7 @@ func parallelPopulateRemoteS3Caches(remoteCaches []string, filePath, cacheKey st
 			// Create S3 client using environment variables
 			client, err := s3.NewClientFromEnv(bucket)
 			if err != nil {
-				if !GitQuiet {
+				if !GetGitQuiet() {
 					color.Yellow("WARNING: Failed to create S3 client for %s: %v", cacheURL, err)
 				}
 				return
@@ -227,14 +234,14 @@ func parallelPopulateRemoteS3Caches(remoteCaches []string, filePath, cacheKey st
 			ctx := context.Background()
 			exists, err := client.BucketExists(ctx)
 			if err != nil {
-				if !GitQuiet {
+				if !GetGitQuiet() {
 					color.Yellow("WARNING: Failed to check if bucket exists: %v", err)
 				}
 				return
 			}
 
 			if !exists {
-				if !GitQuiet {
+				if !GetGitQuiet() {
 					color.Yellow("WARNING: Bucket '%s' does not exist or is not accessible", client.Bucket)
 				}
 				return
@@ -243,14 +250,14 @@ func parallelPopulateRemoteS3Caches(remoteCaches []string, filePath, cacheKey st
 			// Check if the object already exists in S3
 			objectExists, err := client.ObjectExists(ctx, fullS3Key)
 			if err != nil {
-				if !GitQuiet {
+				if !GetGitQuiet() {
 					color.Yellow("WARNING: Failed to check if object exists in S3: %v", err)
 				}
 				return
 			}
 
 			if objectExists {
-				if !GitQuiet {
+				if !GetGitQuiet() {
 					color.Green("Object %s already exists in S3 cache %s, skipping upload", fullS3Key, cacheURL)
 				}
 				return
@@ -259,13 +266,13 @@ func parallelPopulateRemoteS3Caches(remoteCaches []string, filePath, cacheKey st
 			// Upload the file
 			err = client.Upload(ctx, filePath, fullS3Key)
 			if err != nil {
-				if !GitQuiet {
+				if !GetGitQuiet() {
 					color.Yellow("WARNING: Failed to upload to S3 cache %s: %v", cacheURL, err)
 				}
 				return
 			}
 
-			if !GitQuiet {
+			if !GetGitQuiet() {
 				color.Green("Successfully populated S3 remote cache: %s/%s", cacheURL, fullS3Key)
 			}
 		}(remoteURL)

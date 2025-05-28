@@ -44,6 +44,7 @@ func Main() int {
 	cfg := struct {
 		JsonnetHome   string
 		NoGlobalCache bool
+		Quiet         bool
 	}{}
 
 	color.Output = color.Error
@@ -54,7 +55,7 @@ func Main() int {
 	a.Flag("jsonnetpkg-home", "The directory used to cache packages in.").
 		Default("vendor").StringVar(&cfg.JsonnetHome)
 	a.Flag("quiet", "Suppress any output from git command.").
-		Short('q').BoolVar(&pkg.GitQuiet)
+		Short('q').BoolVar(&cfg.Quiet)
 	a.Flag("no-global-cache", "Disable the global cache at ~/.cache/jb.").
 		BoolVar(&cfg.NoGlobalCache)
 
@@ -111,6 +112,9 @@ func Main() int {
 
 	// Process global cache flag
 	pkg.GlobalCacheEnabled = !cfg.NoGlobalCache
+	
+	// Set GitQuiet using the thread-safe function
+	pkg.SetGitQuiet(cfg.Quiet)
 
 	switch command {
 	case initCmd.FullCommand():
