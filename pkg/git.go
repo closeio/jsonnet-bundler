@@ -116,7 +116,7 @@ func validateGzipFile(filepath string) error {
 	defer file.Close()
 
 	// Get file info for size
-	info, err := file.Stat()
+	_, err = file.Stat()
 	if err != nil {
 		return fmt.Errorf("failed to stat file: %w", err)
 	}

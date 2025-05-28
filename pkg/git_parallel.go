@@ -263,7 +263,7 @@ func parallelPopulateRemoteS3Caches(remoteCaches []string, filePath, cacheKey st
 			}
 
 			if !GitQuiet {
-				color.Green("Successfully populated S3 remote cache: %s", cacheURL)
+				color.Green("Successfully populated S3 remote cache: %s/%s", cacheURL, fullS3Key)
 			}
 		}(remoteURL)
 	}
