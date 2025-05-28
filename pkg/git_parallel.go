@@ -250,6 +250,9 @@ func parallelPopulateRemoteS3Caches(remoteCaches []string, filePath, cacheKey st
 			}
 
 			if objectExists {
+				if !GitQuiet {
+					color.Green("Object %s already exists in S3 cache %s, skipping upload", fullS3Key, cacheURL)
+				}
 				return
 			}
 
