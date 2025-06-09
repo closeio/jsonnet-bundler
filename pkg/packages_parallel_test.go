@@ -17,6 +17,7 @@ package pkg
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/jsonnet-bundler/jsonnet-bundler/spec/v1/deps"
@@ -124,7 +125,8 @@ func TestParallelEnsure(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := parallelEnsure(tt.direct, vendorDir, tempDir, tt.locks)
+			var locksSharedMutex sync.Mutex
+			result, err := parallelEnsure(tt.direct, vendorDir, tempDir, tt.locks, &locksSharedMutex)
 
 			if tt.expectError && err == nil {
 				t.Errorf("Expected error but got none")
@@ -234,7 +236,8 @@ func TestParallelEnsureWithNestedDependencies(t *testing.T) {
 	// we'll rely on the fact that check will fail for our test directories
 
 	// Run parallel ensure
-	result, err := parallelEnsure(direct, vendorDir, tempDir, locks)
+	var locksSharedMutex sync.Mutex
+	result, err := parallelEnsure(direct, vendorDir, tempDir, locks, &locksSharedMutex)
 
 	// We expect this to fail when trying to process nested dependencies
 	// because the nested dependency path doesn't exist
@@ -278,7 +281,8 @@ func TestParallelEnsureConcurrency(t *testing.T) {
 
 	// This will fail because the test directories don't exist,
 	// but we're testing that it handles multiple concurrent operations
-	_, err := parallelEnsure(direct, vendorDir, tempDir, locks)
+	var locksSharedMutex sync.Mutex
+	_, err := parallelEnsure(direct, vendorDir, tempDir, locks, &locksSharedMutex)
 	if err == nil {
 		t.Error("Expected error for non-existent directories")
 	}
@@ -330,7 +334,8 @@ func TestParallelEnsureChecksumMismatch(t *testing.T) {
 
 	// Run parallel ensure
 	// This test now simply verifies that the function handles errors appropriately
-	_, err := parallelEnsure(direct, vendorDir, tempDir, locks)
+	var locksSharedMutex sync.Mutex
+	_, err := parallelEnsure(direct, vendorDir, tempDir, locks, &locksSharedMutex)
 	if err == nil {
 		t.Error("Expected error for non-existent dependency")
 	}

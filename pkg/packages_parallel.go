@@ -28,10 +28,9 @@ import (
 )
 
 // parallelEnsure is a parallel version of ensure that downloads multiple packages concurrently
-func parallelEnsure(direct *deps.Ordered, vendorDir, pathToParentModule string, locks *deps.Ordered) (*deps.Ordered, error) {
+func parallelEnsure(direct *deps.Ordered, vendorDir, pathToParentModule string, locks *deps.Ordered, locksSharedMutex *sync.Mutex) (*deps.Ordered, error) {
 	resultDeps := deps.NewOrdered()
 	depsMutex := &sync.Mutex{}
-	locksMutex := &sync.Mutex{}
 
 	// Configure concurrency limits
 	maxConcurrentDownloads := 10
@@ -103,9 +102,9 @@ func parallelEnsure(direct *deps.Ordered, vendorDir, pathToParentModule string, 
 			resultDeps.Set(downloaded.Name(), *downloaded)
 			depsMutex.Unlock()
 
-			locksMutex.Lock()
+			locksSharedMutex.Lock()
 			locks.Set(downloaded.Name(), *downloaded)
-			locksMutex.Unlock()
+			locksSharedMutex.Unlock()
 		}(d, l, present)
 	}
 
@@ -146,7 +145,7 @@ func parallelEnsure(direct *deps.Ordered, vendorDir, pathToParentModule string, 
 					}
 
 					// Recursively process nested dependencies
-					nested, err := parallelEnsure(f.Dependencies, vendorDir, task.absolutePath, locks)
+					nested, err := parallelEnsure(f.Dependencies, vendorDir, task.absolutePath, locks, locksSharedMutex)
 					if err != nil {
 						errOnce.Do(func() {
 							firstErr = err
@@ -217,5 +216,6 @@ func EnsureParallel(direct *deps.Ordered, vendorDir, pathToParentModule string, 
 	if !GetGitQuiet() {
 		color.Cyan("Using parallel package downloads...")
 	}
-	return parallelEnsure(direct, vendorDir, pathToParentModule, locks)
+	var locksSharedMutex sync.Mutex
+	return parallelEnsure(direct, vendorDir, pathToParentModule, locks, &locksSharedMutex)
 }

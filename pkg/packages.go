@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/fatih/color"
 	"github.com/pkg/errors"
@@ -56,7 +57,8 @@ func Ensure(direct v1.JsonnetFile, vendorDir string, oldLocks *deps.Ordered) (*d
 	var locks *deps.Ordered
 	var err error
 	if os.Getenv("JB_PARALLEL_DOWNLOADS") == "true" {
-		locks, err = parallelEnsure(direct.Dependencies, vendorDir, "", oldLocks)
+		var locksSharedMutex sync.Mutex
+		locks, err = parallelEnsure(direct.Dependencies, vendorDir, "", oldLocks, &locksSharedMutex)
 	} else {
 		locks, err = ensure(direct.Dependencies, vendorDir, "", oldLocks)
 	}
