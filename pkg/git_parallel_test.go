@@ -15,6 +15,7 @@
 package pkg
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParallelCheckRemoteCaches(t *testing.T) {
@@ -147,7 +149,7 @@ func TestParallelCheckRemoteCachesWithMultipleServers(t *testing.T) {
 			if strings.HasSuffix(r.URL.Path, testArchiveName) {
 				// Add delay to simulate network latency
 				// Server 0 is fastest, server 2 is slowest
-				// time.Sleep(time.Duration(index*100) * time.Millisecond)
+				time.Sleep(time.Duration(index*10) * time.Millisecond)
 				w.WriteHeader(http.StatusOK)
 				w.Write([]byte(serverContents[index]))
 			} else {
@@ -322,4 +324,212 @@ func TestParallelCheckRemoteCachesCleanup(t *testing.T) {
 	if countAfter > countBefore+len(servers) {
 		t.Errorf("Too many temp files left: before=%d, after=%d, servers=%d", countBefore, countAfter, len(servers))
 	}
+}
+
+func TestParallelCheckRemoteCachesWithTimeout(t *testing.T) {
+	// Test timeout functionality
+	testCacheKey := "test-cache-key"
+	testArchiveName := testCacheKey + ".tar.gz"
+
+	// Create a slow server that will cause timeout
+	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second) // Longer than our timeout
+		if strings.HasSuffix(r.URL.Path, testArchiveName) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("slow content"))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer slowServer.Close()
+
+	// Save original GitQuiet value
+	originalGitQuiet := GitQuiet
+	GitQuiet = true
+	defer func() { GitQuiet = originalGitQuiet }()
+
+	// Test with short timeout
+	_, err := parallelCheckRemoteCachesWithTimeout([]string{slowServer.URL}, testCacheKey, 100*time.Millisecond)
+	if err == nil {
+		t.Error("Expected timeout error")
+	}
+}
+
+func TestFetchFromRemoteCache(t *testing.T) {
+	// Test individual cache fetch functions
+	testCacheKey := "test-cache-key"
+	testArchiveName := testCacheKey + ".tar.gz"
+	testContent := "test content"
+
+	// Create test server
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, testArchiveName) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(testContent))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer testServer.Close()
+
+	// Save original GitQuiet value
+	originalGitQuiet := GitQuiet
+	GitQuiet = true
+	defer func() { GitQuiet = originalGitQuiet }()
+
+	ctx := context.Background()
+
+	// Test successful fetch
+	result := fetchFromRemoteCache(ctx, testServer.URL, testCacheKey)
+	if !result.success {
+		t.Errorf("Expected successful fetch, got error: %v", result.err)
+	}
+
+	if result.tempPath != "" {
+		// Verify content
+		content, err := os.ReadFile(result.tempPath)
+		if err != nil {
+			t.Errorf("Failed to read temp file: %v", err)
+		} else if string(content) != testContent {
+			t.Errorf("Content mismatch: expected %s, got %s", testContent, content)
+		}
+		// Clean up
+		os.Remove(result.tempPath)
+	}
+
+	// Test with context cancellation
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	result = fetchFromRemoteCache(cancelCtx, testServer.URL, testCacheKey)
+	if result.success {
+		t.Error("Expected failure due to context cancellation")
+	}
+}
+
+func TestFetchFromS3Cache(t *testing.T) {
+	// Test S3 cache fetching (will fail without proper S3 setup, but tests the code path)
+	ctx := context.Background()
+	cacheURL := "s3://test-bucket/cache"
+	cacheKey := "test-key"
+
+	// Save original GitQuiet value
+	originalGitQuiet := GitQuiet
+	GitQuiet = true
+	defer func() { GitQuiet = originalGitQuiet }()
+
+	// This will fail because S3 credentials aren't set up, but it tests the code path
+	result := fetchFromS3Cache(ctx, cacheURL, cacheKey)
+	if result.success {
+		t.Error("Expected failure for S3 fetch without credentials")
+	}
+
+	// Test with cancelled context
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result = fetchFromS3Cache(cancelCtx, cacheURL, cacheKey)
+	if result.success {
+		t.Error("Expected failure due to context cancellation")
+	}
+}
+
+func TestHandleCacheResults(t *testing.T) {
+	// Test result handling
+	ctx := context.Background()
+	resultChan := make(chan cacheResult, 3)
+
+	// Send some results
+	resultChan <- cacheResult{success: false, err: fmt.Errorf("failed 1")}
+	resultChan <- cacheResult{success: false, err: fmt.Errorf("failed 2")}
+	resultChan <- cacheResult{success: true, tempPath: "/tmp/test", cacheURL: "http://test"}
+	close(resultChan)
+
+	// Save original GitQuiet value
+	originalGitQuiet := GitQuiet
+	GitQuiet = true
+	defer func() { GitQuiet = originalGitQuiet }()
+
+	tempPath, err := handleCacheResults(ctx, resultChan)
+	if err != nil {
+		t.Errorf("Expected success, got error: %v", err)
+	}
+	if tempPath != "/tmp/test" {
+		t.Errorf("Expected temp path '/tmp/test', got %s", tempPath)
+	}
+}
+
+func TestHandleCacheResultsTimeout(t *testing.T) {
+	// Test timeout in result handling
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	resultChan := make(chan cacheResult)
+	// Don't send any results, let it timeout
+
+	// Save original GitQuiet value
+	originalGitQuiet := GitQuiet
+	GitQuiet = true
+	defer func() { GitQuiet = originalGitQuiet }()
+
+	_, err := handleCacheResults(ctx, resultChan)
+	if err == nil {
+		t.Error("Expected timeout error")
+	}
+}
+
+func TestParallelPopulateRemoteS3CachesWithTimeout(t *testing.T) {
+	// Test S3 population with timeout
+	tempDir := t.TempDir()
+	testFile := filepath.Join(tempDir, "test.tar.gz")
+	testContent := []byte("test content")
+	if err := os.WriteFile(testFile, testContent, 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Save original GitQuiet value
+	originalGitQuiet := GitQuiet
+	GitQuiet = true
+	defer func() { GitQuiet = originalGitQuiet }()
+
+	// Test with S3 URLs (will fail without proper setup, but tests the code path)
+	s3URLs := []string{"s3://test-bucket/cache"}
+
+	// This should not panic and should handle the timeout gracefully
+	parallelPopulateRemoteS3CachesWithTimeout(s3URLs, testFile, "test-key", 100*time.Millisecond)
+
+	// Test with non-S3 URLs
+	nonS3URLs := []string{"http://test.com", "https://test.com"}
+	parallelPopulateRemoteS3CachesWithTimeout(nonS3URLs, testFile, "test-key", 100*time.Millisecond)
+
+	// Test with directory instead of file
+	parallelPopulateRemoteS3CachesWithTimeout(s3URLs, tempDir, "test-key", 100*time.Millisecond)
+}
+
+func TestUploadToS3Cache(t *testing.T) {
+	// Test individual S3 upload function
+	tempDir := t.TempDir()
+	testFile := filepath.Join(tempDir, "test.tar.gz")
+	testContent := []byte("test content")
+	if err := os.WriteFile(testFile, testContent, 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Save original GitQuiet value
+	originalGitQuiet := GitQuiet
+	GitQuiet = true
+	defer func() { GitQuiet = originalGitQuiet }()
+
+	ctx := context.Background()
+
+	// Test with invalid S3 URL
+	uploadToS3Cache(ctx, "invalid-url", testFile, "test-key.tar.gz")
+
+	// Test with valid S3 URL (will fail without credentials, but tests the code path)
+	uploadToS3Cache(ctx, "s3://test-bucket/cache", testFile, "test-key.tar.gz")
+
+	// Test with cancelled context
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	uploadToS3Cache(cancelCtx, "s3://test-bucket/cache", testFile, "test-key.tar.gz")
 }

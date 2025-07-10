@@ -15,10 +15,13 @@
 package pkg
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jsonnet-bundler/jsonnet-bundler/spec/v1/deps"
 )
@@ -338,5 +341,226 @@ func TestParallelEnsureChecksumMismatch(t *testing.T) {
 	_, err := parallelEnsure(direct, vendorDir, tempDir, locks, &locksSharedMutex)
 	if err == nil {
 		t.Error("Expected error for non-existent dependency")
+	}
+}
+
+func TestParallelEnsureWithContext(t *testing.T) {
+	// Test context cancellation behavior
+	tempDir := t.TempDir()
+	vendorDir := filepath.Join(tempDir, "vendor")
+	if err := os.MkdirAll(vendorDir, 0755); err != nil {
+		t.Fatalf("Failed to create vendor dir: %v", err)
+	}
+
+	// Save original GitQuiet value
+	originalGitQuiet := GitQuiet
+	GitQuiet = true
+	defer func() { GitQuiet = originalGitQuiet }()
+
+	// Create a context that will be cancelled quickly
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	defer cancel()
+
+	// Create many dependencies to ensure timeout
+	direct := deps.NewOrdered()
+	for i := 0; i < 20; i++ {
+		depName := string(rune('a' + i))
+		direct.Set(depName, deps.Dependency{
+			Source: deps.Source{
+				LocalSource: &deps.Local{
+					Directory: filepath.Join("testdata", depName),
+				},
+			},
+		})
+	}
+
+	locks := deps.NewOrdered()
+	var locksSharedMutex sync.Mutex
+
+	// This should timeout or return an error due to context cancellation
+	_, err := parallelEnsureWithContext(ctx, direct, vendorDir, tempDir, locks, &locksSharedMutex)
+	if err == nil {
+		t.Error("Expected error due to context cancellation or non-existent dependencies")
+	}
+}
+
+func TestDownloadTaskProcessing(t *testing.T) {
+	// Test individual download task processing
+	tempDir := t.TempDir()
+	vendorDir := filepath.Join(tempDir, "vendor")
+	if err := os.MkdirAll(vendorDir, 0755); err != nil {
+		t.Fatalf("Failed to create vendor dir: %v", err)
+	}
+
+	// Create a test dependency directory
+	depDir := filepath.Join(tempDir, "test-dep")
+	if err := os.MkdirAll(depDir, 0755); err != nil {
+		t.Fatalf("Failed to create dep dir: %v", err)
+	}
+
+	// Save original GitQuiet value
+	originalGitQuiet := GitQuiet
+	GitQuiet = true
+	defer func() { GitQuiet = originalGitQuiet }()
+
+	ctx := context.Background()
+	resultDeps := deps.NewOrdered()
+	depsMutex := &sync.RWMutex{}
+	locks := deps.NewOrdered()
+	locksSharedMutex := &sync.Mutex{}
+
+	task := downloadTask{
+		dep: deps.Dependency{
+			Source: deps.Source{
+				LocalSource: &deps.Local{
+					Directory: depDir,
+				},
+			},
+		},
+		locked:     deps.Dependency{},
+		hasLock:    false,
+		vendorDir:  vendorDir,
+		parentPath: tempDir,
+	}
+
+	// This will fail because the dependency doesn't exist as a proper package
+	err := processDownloadTask(ctx, task, resultDeps, depsMutex, locks, locksSharedMutex)
+	if err == nil {
+		t.Error("Expected error for invalid dependency")
+	}
+}
+
+func TestNestedTaskCollection(t *testing.T) {
+	// Test nested task collection
+	tempDir := t.TempDir()
+	vendorDir := filepath.Join(tempDir, "vendor")
+
+	resultDeps := deps.NewOrdered()
+	resultDeps.Set("test-dep", deps.Dependency{
+		Source: deps.Source{
+			LocalSource: &deps.Local{
+				Directory: "test-path",
+			},
+		},
+	})
+	resultDeps.Set("single-dep", deps.Dependency{
+		Single: true, // Should be skipped
+		Source: deps.Source{
+			LocalSource: &deps.Local{
+				Directory: "single-path",
+			},
+		},
+	})
+
+	depsMutex := &sync.RWMutex{}
+	ctx := context.Background()
+
+	tasks := collectNestedTasks(ctx, resultDeps, depsMutex, vendorDir)
+
+	// Should collect one task (single-dep should be skipped)
+	if len(tasks) != 1 {
+		t.Errorf("Expected 1 task, got %d", len(tasks))
+	}
+
+	if len(tasks) > 0 && tasks[0].dep.Single {
+		t.Error("Single dependency should not be collected")
+	}
+}
+
+func TestResolveAbsolutePath(t *testing.T) {
+	// Test absolute path resolution
+	tempDir := t.TempDir()
+	testPath := filepath.Join(tempDir, "test-path")
+	if err := os.MkdirAll(testPath, 0755); err != nil {
+		t.Fatalf("Failed to create test path: %v", err)
+	}
+
+	// Test existing path
+	resolvedPath := resolveAbsolutePath(testPath)
+	if resolvedPath == "" {
+		t.Error("Expected resolved path for existing directory")
+	}
+
+	// Test non-existing path
+	nonExistentPath := filepath.Join(tempDir, "non-existent")
+	resolvedPath = resolveAbsolutePath(nonExistentPath)
+	if resolvedPath != nonExistentPath {
+		t.Errorf("Expected original path for non-existent directory, got %s", resolvedPath)
+	}
+}
+
+func TestMinFunction(t *testing.T) {
+	// Test the min utility function
+	tests := []struct {
+		a, b, expected int
+	}{
+		{1, 2, 1},
+		{5, 3, 3},
+		{10, 10, 10},
+		{0, 100, 0},
+	}
+
+	for _, tt := range tests {
+		result := min(tt.a, tt.b)
+		if result != tt.expected {
+			t.Errorf("min(%d, %d) = %d, expected %d", tt.a, tt.b, result, tt.expected)
+		}
+	}
+}
+
+func TestConcurrentAccessSafety(t *testing.T) {
+	// Test that concurrent access to shared data structures is safe
+	resultDeps := deps.NewOrdered()
+	depsMutex := &sync.RWMutex{}
+	locks := deps.NewOrdered()
+	locksSharedMutex := &sync.Mutex{}
+
+	// Simulate concurrent access
+	var wg sync.WaitGroup
+	numGoroutines := 10
+	numOperations := 100
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < numOperations; j++ {
+				depName := fmt.Sprintf("dep-%d-%d", id, j)
+				dep := deps.Dependency{
+					Source: deps.Source{
+						LocalSource: &deps.Local{
+							Directory: "test",
+						},
+					},
+				}
+
+				// Test concurrent writes
+				depsMutex.Lock()
+				resultDeps.Set(depName, dep)
+				depsMutex.Unlock()
+
+				locksSharedMutex.Lock()
+				locks.Set(depName, dep)
+				locksSharedMutex.Unlock()
+
+				// Test concurrent reads
+				depsMutex.RLock()
+				_, exists := resultDeps.Get(depName)
+				depsMutex.RUnlock()
+
+				if !exists {
+					t.Errorf("Expected dependency %s to exist", depName)
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Verify final state
+	expectedCount := numGoroutines * numOperations
+	actualCount := len(resultDeps.Keys())
+	if actualCount != expectedCount {
+		t.Errorf("Expected %d dependencies, got %d", expectedCount, actualCount)
 	}
 }
