@@ -73,8 +73,8 @@ func TestRemoteCacheCommands(t *testing.T) {
 
 	// Test list-remote command
 	t.Run("ListRemote", func(t *testing.T) {
-		// Run server list command with JSON output
-		result := cacheServerListCommand(tmpDir, "vendor", true)
+		// Run remote list command with JSON output
+		result := cacheRemoteListCommand(tmpDir, "vendor", true)
 		assert.Equal(t, 0, result, "Command should succeed")
 
 		// Verify that global cache still contains our test remotes
@@ -85,8 +85,8 @@ func TestRemoteCacheCommands(t *testing.T) {
 
 	// Test remove-remote command
 	t.Run("RemoveRemote", func(t *testing.T) {
-		// Run server remove command to remove the second cache
-		result := cacheServerRemoveCommand(tmpDir, "vendor", "s3://cache2.example.com")
+		// Run remote remove command to remove the second cache
+		result := cacheRemoteRemoveCommand(tmpDir, "vendor", "s3://cache2.example.com")
 		assert.Equal(t, 0, result, "Command should succeed")
 
 		// Verify that the remote was removed from global cache
@@ -103,8 +103,8 @@ func TestRemoteCacheCommands(t *testing.T) {
 
 	// Test removing non-existent remote
 	t.Run("RemoveNonExistentRemote", func(t *testing.T) {
-		// Run server remove command with a non-existent URL
-		result := cacheServerRemoveCommand(tmpDir, "vendor", "s3://nonexistent.example.com")
+		// Run remote remove command with a non-existent URL
+		result := cacheRemoteRemoveCommand(tmpDir, "vendor", "s3://nonexistent.example.com")
 		assert.Equal(t, 0, result, "Command should succeed even on non-existent remote")
 
 		// Verify that the remotes are unchanged
@@ -121,7 +121,7 @@ func TestRemoteCacheCommands(t *testing.T) {
 	// Test add-remote followed by list-remote
 	t.Run("AddRemoteAndList", func(t *testing.T) {
 		// Add a new remote
-		result := cacheServerAddCommand(tmpDir, "vendor", "s3://cache4.example.com")
+		result := cacheRemoteAddCommand(tmpDir, "vendor", "s3://cache4.example.com")
 		assert.Equal(t, 0, result, "Add command should succeed")
 
 		// Verify that remote was added to global cache
@@ -135,9 +135,9 @@ func TestRemoteCacheCommands(t *testing.T) {
 		}
 		assert.Equal(t, expectedRemotes, index.RemoteCaches, "New remote should be added")
 
-		// Run server list command with JSON output
+		// Run remote list command with JSON output
 		capturedOutput := captureTempStdout(t, func() {
-			result = cacheServerListCommand(tmpDir, "vendor", true)
+			result = cacheRemoteListCommand(tmpDir, "vendor", true)
 		})
 		assert.Equal(t, 0, result, "List command should succeed")
 

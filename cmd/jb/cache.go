@@ -88,8 +88,8 @@ func cacheFlushCommand(workdir, jsonnetHome string) int {
 	return 0
 }
 
-// cacheServerAddCommand adds a remote cache server
-func cacheServerAddCommand(workdir, jsonnetHome string, url string) int {
+// cacheRemoteAddCommand adds a remote cache server
+func cacheRemoteAddCommand(workdir, jsonnetHome string, url string) int {
 	globalCacheDir := filepath.Join(os.Getenv("HOME"), ".cache", "jb")
 
 	// Validate the URL
@@ -147,8 +147,8 @@ func cacheServerAddCommand(workdir, jsonnetHome string, url string) int {
 	return 0
 }
 
-// cacheServerListCommand lists remote cache servers
-func cacheServerListCommand(workdir, jsonnetHome string, jsonOutput bool) int {
+// cacheRemoteListCommand lists remote cache servers
+func cacheRemoteListCommand(workdir, jsonnetHome string, jsonOutput bool) int {
 	globalCacheDir := filepath.Join(os.Getenv("HOME"), ".cache", "jb")
 
 	// Exit early if global cache is disabled
@@ -202,8 +202,8 @@ func cacheServerListCommand(workdir, jsonnetHome string, jsonOutput bool) int {
 	return 0
 }
 
-// cacheServerRemoveCommand removes a remote cache server
-func cacheServerRemoveCommand(workdir, jsonnetHome string, url string) int {
+// cacheRemoteRemoveCommand removes a remote cache server
+func cacheRemoteRemoveCommand(workdir, jsonnetHome string, url string) int {
 	globalCacheDir := filepath.Join(os.Getenv("HOME"), ".cache", "jb")
 
 	// Exit early if global cache is disabled
