@@ -81,14 +81,16 @@ func Main() int {
 	cacheFlushCmd := cacheCmd.Command("flush", "Completely empty the cache")
 	// All flags related to local cache removed
 
-	cacheAddRemoteCmd := cacheCmd.Command("add-remote", "Add a remote cache server")
-	cacheAddRemoteCmdURL := cacheAddRemoteCmd.Arg("url", "URL of the remote cache server").Required().String()
+	cacheServerCmd := cacheCmd.Command("server", "Remote cache server management commands")
 
-	cacheListRemoteCmd := cacheCmd.Command("list-remote", "List remote cache servers")
-	cacheListRemoteCmdJSON := cacheListRemoteCmd.Flag("json", "Output in JSON format").Bool()
+	cacheServerAddCmd := cacheServerCmd.Command("add", "Add a remote cache server")
+	cacheServerAddCmdURL := cacheServerAddCmd.Arg("url", "URL of the remote cache server").Required().String()
 
-	cacheRemoveRemoteCmd := cacheCmd.Command("remove-remote", "Remove a remote cache server")
-	cacheRemoveRemoteCmdURL := cacheRemoveRemoteCmd.Arg("url", "URL of the remote cache server to remove").Required().String()
+	cacheServerListCmd := cacheServerCmd.Command("list", "List remote cache servers")
+	cacheServerListCmdJSON := cacheServerListCmd.Flag("json", "Output in JSON format").Bool()
+
+	cacheServerRemoveCmd := cacheServerCmd.Command("remove", "Remove a remote cache server")
+	cacheServerRemoveCmdURL := cacheServerRemoveCmd.Arg("url", "URL of the remote cache server to remove").Required().String()
 
 	cacheListCmd := cacheCmd.Command("list", "List cache entries")
 	cacheListCmdJSON := cacheListCmd.Flag("json", "Output in JSON format").Bool()
@@ -132,12 +134,12 @@ func Main() int {
 	// Clean command removed
 	case cacheFlushCmd.FullCommand():
 		return cacheFlushCommand(workdir, cfg.JsonnetHome)
-	case cacheAddRemoteCmd.FullCommand():
-		return cacheAddRemoteCommand(workdir, cfg.JsonnetHome, *cacheAddRemoteCmdURL)
-	case cacheListRemoteCmd.FullCommand():
-		return cacheListRemoteCommand(workdir, cfg.JsonnetHome, *cacheListRemoteCmdJSON)
-	case cacheRemoveRemoteCmd.FullCommand():
-		return cacheRemoveRemoteCommand(workdir, cfg.JsonnetHome, *cacheRemoveRemoteCmdURL)
+	case cacheServerAddCmd.FullCommand():
+		return cacheServerAddCommand(workdir, cfg.JsonnetHome, *cacheServerAddCmdURL)
+	case cacheServerListCmd.FullCommand():
+		return cacheServerListCommand(workdir, cfg.JsonnetHome, *cacheServerListCmdJSON)
+	case cacheServerRemoveCmd.FullCommand():
+		return cacheServerRemoveCommand(workdir, cfg.JsonnetHome, *cacheServerRemoveCmdURL)
 	case cacheListCmd.FullCommand():
 		return cacheListCommand(workdir, cfg.JsonnetHome, *cacheListCmdJSON)
 	// Config command removed
