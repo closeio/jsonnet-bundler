@@ -84,6 +84,7 @@ func getArchiveMutex(cacheKey string) *sync.Mutex {
 	return mutex
 }
 
+
 type GitPackage struct {
 	Source *deps.Git
 }
@@ -184,7 +185,47 @@ func validateGzipFile(filepath string) error {
 	return nil
 }
 
+// copyWithContext copies data from src to dst while respecting context cancellation
+func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	// Use a buffer to copy in chunks and check context periodically
+	buf := make([]byte, 32*1024)
+	var written int64
+	
+	for {
+		select {
+		case <-ctx.Done():
+			return written, ctx.Err()
+		default:
+		}
+		
+		nr, er := src.Read(buf)
+		if nr > 0 {
+			nw, ew := dst.Write(buf[0:nr])
+			if nw > 0 {
+				written += int64(nw)
+			}
+			if ew != nil {
+				return written, ew
+			}
+			if nr != nw {
+				return written, io.ErrShortWrite
+			}
+		}
+		if er != nil {
+			if er != io.EOF {
+				return written, er
+			}
+			break
+		}
+	}
+	return written, nil
+}
+
 func downloadGitHubArchive(filepath string, urlStr string) error {
+	return downloadGitHubArchiveWithContext(context.Background(), filepath, urlStr)
+}
+
+func downloadGitHubArchiveWithContext(ctx context.Context, filepath string, urlStr string) error {
 	// Check if this is an S3 URL
 	if s3.IsS3URL(urlStr) {
 		if !GetGitQuiet() {
@@ -221,17 +262,38 @@ func downloadGitHubArchive(filepath string, urlStr string) error {
 	var lastErr error
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
+		// Check context cancellation before each attempt
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		// Add exponential backoff for retries
 		if attempt > 1 {
 			backoffTime := time.Duration(attempt-1) * time.Second
 			if !GetGitQuiet() {
 				color.Yellow("Retrying download (attempt %d/%d) after %v...", attempt, maxRetries, backoffTime)
 			}
-			time.Sleep(backoffTime)
+			
+			// Respect context during sleep
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoffTime):
+			}
 		}
 
-		// Get the data
-		resp, err := http.Get(urlStr)
+		// Create request with context
+		req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		// Use context-aware client
+		client := &http.Client{Timeout: 5 * time.Minute}
+		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
 			if !GetGitQuiet() {
@@ -257,10 +319,12 @@ func downloadGitHubArchive(filepath string, urlStr string) error {
 			}
 			defer out.Close()
 
-			// Write the body to file with a hash calculator
+			// Write the body to file with a hash calculator and context support
 			hasher := sha256.New()
 			writer := io.MultiWriter(out, hasher)
-			written, err := io.Copy(writer, resp.Body)
+			
+			// Use context-aware copy
+			written, err := copyWithContext(ctx, writer, resp.Body)
 			resp.Body.Close()
 			out.Close() // Close the file explicitly before validation
 
@@ -395,6 +459,10 @@ func downloadDirectlyToDestination(archiveFilepath, archiveUrl, cacheKey string)
 // 2. Remote caches (if configured)
 // 3. Upstream source (if all else fails)
 func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
+	return ensureArchiveCacheWithContext(context.Background(), archiveFilepath, archiveUrl)
+}
+
+func ensureArchiveCacheWithContext(ctx context.Context, archiveFilepath, archiveUrl string) error {
 	// Create a unique key based on the URL
 	cacheKey := getCacheKeyForURL(archiveUrl)
 
@@ -633,8 +701,8 @@ func ensureArchiveCache(archiveFilepath, archiveUrl string) error {
 				return downloadDirectlyToDestination(archiveFilepath, archiveUrl, cacheKey)
 			}
 
-			// Download to global cache
-			if err := downloadGitHubArchive(globalArchivePath, archiveUrl); err != nil {
+			// Download to global cache with context
+			if err := downloadGitHubArchiveWithContext(ctx, globalArchivePath, archiveUrl); err != nil {
 				if !GetGitQuiet() {
 					// If this is an S3 error, the detailed URL components are already in the error message
 					color.Yellow("WARNING: Could not download to global cache: %v", err)

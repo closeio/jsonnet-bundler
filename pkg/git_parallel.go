@@ -196,8 +196,12 @@ func downloadFromHTTPResponse(ctx context.Context, resp *http.Response, requestU
 // handleCacheResults processes cache results and returns the first successful one
 func handleCacheResults(ctx context.Context, resultChan <-chan cacheResult) (string, error) {
 	var tempFiles []string
+	var tempFilesMutex sync.Mutex
+	
 	defer func() {
-		// Clean up any remaining temp files
+		// Clean up any remaining temp files with mutex protection
+		tempFilesMutex.Lock()
+		defer tempFilesMutex.Unlock()
 		for _, tf := range tempFiles {
 			os.Remove(tf)
 		}
@@ -216,9 +220,21 @@ func handleCacheResults(ctx context.Context, resultChan <-chan cacheResult) (str
 				if !GetGitQuiet() {
 					color.Cyan("REMOTE CACHE HIT (parallel): %s", result.cacheURL)
 				}
+				// Remove successful temp file from cleanup list
+				tempFilesMutex.Lock()
+				for i, tf := range tempFiles {
+					if tf == result.tempPath {
+						tempFiles = append(tempFiles[:i], tempFiles[i+1:]...)
+						break
+					}
+				}
+				tempFilesMutex.Unlock()
 				return result.tempPath, nil
 			} else if result.tempPath != "" {
+				// Add failed temp file to cleanup list
+				tempFilesMutex.Lock()
 				tempFiles = append(tempFiles, result.tempPath)
+				tempFilesMutex.Unlock()
 			}
 		}
 	}
@@ -227,6 +243,13 @@ func handleCacheResults(ctx context.Context, resultChan <-chan cacheResult) (str
 // parallelPopulateRemoteS3Caches uploads a file to multiple S3 remote caches in parallel
 func parallelPopulateRemoteS3Caches(remoteCaches []string, filePath, cacheKey string) {
 	parallelPopulateRemoteS3CachesWithTimeout(remoteCaches, filePath, cacheKey, 5*time.Minute)
+}
+
+// S3UploadResult represents the result of an S3 upload operation
+type S3UploadResult struct {
+	CacheURL string
+	Success  bool
+	Error    error
 }
 
 // parallelPopulateRemoteS3CachesWithTimeout uploads with a timeout
@@ -314,13 +337,24 @@ func parallelPopulateRemoteS3CachesWithTimeout(remoteCaches []string, filePath, 
 
 // uploadToS3Cache handles uploading to a single S3 cache
 func uploadToS3Cache(ctx context.Context, cacheURL, filePath, s3Key string) {
+	result := uploadToS3CacheWithResult(ctx, cacheURL, filePath, s3Key)
+	if !result.Success && !GetGitQuiet() {
+		color.Yellow("WARNING: Failed to upload to S3 cache %s: %v", cacheURL, result.Error)
+	} else if result.Success && !GetGitQuiet() {
+		color.Green("Successfully populated S3 remote cache: %s/%s", cacheURL, s3Key)
+	}
+}
+
+// uploadToS3CacheWithResult handles uploading to a single S3 cache and returns detailed result
+func uploadToS3CacheWithResult(ctx context.Context, cacheURL, filePath, s3Key string) S3UploadResult {
 	// Extract bucket from S3 URL
 	parsedURL, parseErr := url.Parse(cacheURL)
 	if parseErr != nil {
-		if !GetGitQuiet() {
-			color.Yellow("WARNING: Failed to parse S3 URL %s: %v", cacheURL, parseErr)
+		return S3UploadResult{
+			CacheURL: cacheURL,
+			Success:  false,
+			Error:    fmt.Errorf("failed to parse S3 URL: %w", parseErr),
 		}
-		return
 	}
 
 	// Get bucket name from URL host
@@ -338,54 +372,65 @@ func uploadToS3Cache(ctx context.Context, cacheURL, filePath, s3Key string) {
 	// Create S3 client using environment variables
 	client, err := s3.NewClientFromEnv(bucket)
 	if err != nil {
-		if !GetGitQuiet() {
-			color.Yellow("WARNING: Failed to create S3 client for %s: %v", cacheURL, err)
+		return S3UploadResult{
+			CacheURL: cacheURL,
+			Success:  false,
+			Error:    fmt.Errorf("failed to create S3 client: %w", err),
 		}
-		return
 	}
 
 	// Check if bucket exists and is accessible before attempting upload
 	exists, err := client.BucketExists(ctx)
 	if err != nil {
-		if !GetGitQuiet() {
-			color.Yellow("WARNING: Failed to check if bucket exists: %v", err)
+		return S3UploadResult{
+			CacheURL: cacheURL,
+			Success:  false,
+			Error:    fmt.Errorf("failed to check bucket existence: %w", err),
 		}
-		return
 	}
 
 	if !exists {
-		if !GetGitQuiet() {
-			color.Yellow("WARNING: Bucket '%s' does not exist or is not accessible", client.Bucket)
+		return S3UploadResult{
+			CacheURL: cacheURL,
+			Success:  false,
+			Error:    fmt.Errorf("bucket '%s' does not exist or is not accessible", client.Bucket),
 		}
-		return
 	}
 
 	// Check if the object already exists in S3
 	objectExists, err := client.ObjectExists(ctx, fullS3Key)
 	if err != nil {
-		if !GetGitQuiet() {
-			color.Yellow("WARNING: Failed to check if object exists in S3: %v", err)
+		return S3UploadResult{
+			CacheURL: cacheURL,
+			Success:  false,
+			Error:    fmt.Errorf("failed to check object existence: %w", err),
 		}
-		return
 	}
 
 	if objectExists {
 		if !GetGitQuiet() {
 			color.Green("Object %s already exists in S3 cache %s, skipping upload", fullS3Key, cacheURL)
 		}
-		return
+		return S3UploadResult{
+			CacheURL: cacheURL,
+			Success:  true,
+			Error:    nil,
+		}
 	}
 
 	// Upload the file
 	err = client.Upload(ctx, filePath, fullS3Key)
 	if err != nil {
-		if !GetGitQuiet() {
-			color.Yellow("WARNING: Failed to upload to S3 cache %s: %v", cacheURL, err)
+		return S3UploadResult{
+			CacheURL: cacheURL,
+			Success:  false,
+			Error:    fmt.Errorf("upload failed: %w", err),
 		}
-		return
 	}
 
-	if !GetGitQuiet() {
-		color.Green("Successfully populated S3 remote cache: %s/%s", cacheURL, fullS3Key)
+	return S3UploadResult{
+		CacheURL: cacheURL,
+		Success:  true,
+		Error:    nil,
 	}
 }
