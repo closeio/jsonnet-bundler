@@ -84,7 +84,6 @@ func getArchiveMutex(cacheKey string) *sync.Mutex {
 	return mutex
 }
 
-
 type GitPackage struct {
 	Source *deps.Git
 }
@@ -190,14 +189,14 @@ func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, 
 	// Use a buffer to copy in chunks and check context periodically
 	buf := make([]byte, 32*1024)
 	var written int64
-	
+
 	for {
 		select {
 		case <-ctx.Done():
 			return written, ctx.Err()
 		default:
 		}
-		
+
 		nr, er := src.Read(buf)
 		if nr > 0 {
 			nw, ew := dst.Write(buf[0:nr])
@@ -275,7 +274,7 @@ func downloadGitHubArchiveWithContext(ctx context.Context, filepath string, urlS
 			if !GetGitQuiet() {
 				color.Yellow("Retrying download (attempt %d/%d) after %v...", attempt, maxRetries, backoffTime)
 			}
-			
+
 			// Respect context during sleep
 			select {
 			case <-ctx.Done():
@@ -322,7 +321,7 @@ func downloadGitHubArchiveWithContext(ctx context.Context, filepath string, urlS
 			// Write the body to file with a hash calculator and context support
 			hasher := sha256.New()
 			writer := io.MultiWriter(out, hasher)
-			
+
 			// Use context-aware copy
 			written, err := copyWithContext(ctx, writer, resp.Body)
 			resp.Body.Close()
@@ -1473,7 +1472,13 @@ func (p *GitPackage) copyToDestination(workDir, tempDir, destPath string, useGlo
 	// Move directly from temp directory
 	srcPath := path.Join(tempDir, p.Source.Subdir)
 	if err := os.Rename(srcPath, destPath); err != nil {
-		return errors.Wrap(err, "failed to move package")
+		// If rename fails (e.g., cross-device link), fall back to copy + remove
+		if err := copyDirectory(srcPath, destPath); err != nil {
+			return errors.Wrap(err, "failed to copy package")
+		}
+		if err := os.RemoveAll(srcPath); err != nil {
+			return errors.Wrap(err, "failed to remove source after copy")
+		}
 	}
 
 	return nil
@@ -1496,7 +1501,13 @@ func (p *GitPackage) copyFromGlobalCache(workDir, tempDir, destPath string) erro
 
 	// Move from transfer directory to final destination
 	if err := os.Rename(transferDir, destPath); err != nil {
-		return errors.Wrap(err, "failed to move package")
+		// If rename fails (e.g., cross-device link), fall back to copy + remove
+		if err := copyDirectory(transferDir, destPath); err != nil {
+			return errors.Wrap(err, "failed to copy package")
+		}
+		if err := os.RemoveAll(transferDir); err != nil {
+			return errors.Wrap(err, "failed to remove transfer directory after copy")
+		}
 	}
 
 	return nil
