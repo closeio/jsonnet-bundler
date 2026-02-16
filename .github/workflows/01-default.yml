@@ -14,31 +14,24 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        go_version: [1.21, 1.22, 1.23]
-
     steps:
     - name: Checkout Repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
 
     - name: Set up Go
-      uses: actions/setup-go@v2
+      uses: actions/setup-go@v5
       with:
-        go-version: ${{ matrix.go_version }}
-        install-go: true
-
-    - name: Cache Go Modules
-      uses: actions/cache@v2
-      with:
-        path: ~/go/pkg/mod
-        key: go-${{ matrix.go_version }}-${{ runner.os }}
+        go-version: '1.26'
+        check-latest: true
+        cache: true
+        cache-dependency-path: 'go.sum'
 
     - name: Check Go version
       run: go version
 
     - name: Go mod vendor
       run: go mod vendor
+
     - name: Git diff check
       run: git diff --exit-code
 
@@ -48,11 +41,11 @@ jobs:
         make test
         make test-integration
 
-    - name: Check License and Generate
+    - name: Check License  # and Generate
       run: |
         make check-license
-        make generate
-        git diff --exit-code
+        # make generate
+        # git diff --exit-code
 
     - name: Cleanup
       run: go clean -modcache

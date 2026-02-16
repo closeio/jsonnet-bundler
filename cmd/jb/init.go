@@ -16,13 +16,13 @@ package main
 
 import (
 	"encoding/json"
-	"io/ioutil"
+	"os"
 	"path/filepath"
-
-	"gopkg.in/alecthomas/kingpin.v2"
 
 	"github.com/jsonnet-bundler/jsonnet-bundler/pkg/jsonnetfile"
 	v1 "github.com/jsonnet-bundler/jsonnet-bundler/spec/v1"
+
+	"gopkg.in/alecthomas/kingpin.v2"
 )
 
 func initCommand(dir string) int {
@@ -44,7 +44,7 @@ func initCommand(dir string) int {
 
 	filename := filepath.Join(dir, jsonnetfile.File)
 
-	ioutil.WriteFile(filename, contents, 0644)
+	os.WriteFile(filename, contents, 0644)
 	kingpin.FatalIfError(err, "Failed to write new jsonnetfile.json")
 
 	return 0

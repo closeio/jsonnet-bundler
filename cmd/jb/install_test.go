@@ -19,7 +19,6 @@ package main
 
 import (
 	"encoding/json"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -119,7 +118,7 @@ func testInstallCommandWithJsonnetHome(t *testing.T, jsonnetHome string) {
 func jsonnetFileContent(t *testing.T, filename string, content []byte) {
 	t.Helper()
 
-	bytes, err := ioutil.ReadFile(filename)
+	bytes, err := os.ReadFile(filename)
 	assert.NoError(t, err)
 	if eq := assert.JSONEq(t, string(content), string(bytes)); !eq {
 		t.Log(string(bytes))

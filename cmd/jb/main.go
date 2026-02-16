@@ -31,6 +31,7 @@ const (
 	updateActionName  = "update"
 	initActionName    = "init"
 	rewriteActionName = "rewrite"
+	cacheActionName   = "cache"
 )
 
 var Version = "dev"
@@ -41,7 +42,9 @@ func main() {
 
 func Main() int {
 	cfg := struct {
-		JsonnetHome string
+		JsonnetHome   string
+		NoGlobalCache bool
+		Quiet         bool
 	}{}
 
 	color.Output = color.Error
@@ -52,7 +55,9 @@ func Main() int {
 	a.Flag("jsonnetpkg-home", "The directory used to cache packages in.").
 		Default("vendor").StringVar(&cfg.JsonnetHome)
 	a.Flag("quiet", "Suppress any output from git command.").
-		Short('q').BoolVar(&pkg.GitQuiet)
+		Short('q').BoolVar(&cfg.Quiet)
+	a.Flag("no-global-cache", "Disable the global cache at ~/.cache/jb.").
+		BoolVar(&cfg.NoGlobalCache)
 
 	initCmd := a.Command(initActionName, "Initialize a new empty jsonnetfile")
 
@@ -65,6 +70,33 @@ func Main() int {
 	updateCmdURIs := updateCmd.Arg("uris", "URIs to packages to update, URLs or file paths").Strings()
 
 	rewriteCmd := a.Command(rewriteActionName, "Automatically rewrite legacy imports to absolute ones")
+
+	// Cache command with subcommands
+	cacheCmd := a.Command(cacheActionName, "Cache management commands")
+
+	cacheStatusCmd := cacheCmd.Command("status", "Show status of the global cache")
+
+	// Clean command removed
+
+	cacheFlushCmd := cacheCmd.Command("flush", "Completely empty the cache")
+	// All flags related to local cache removed
+
+	cacheRemoteCmd := cacheCmd.Command("remote", "Remote cache server management commands")
+
+	cacheRemoteAddCmd := cacheRemoteCmd.Command("add", "Add a remote cache server")
+	cacheRemoteAddCmdURL := cacheRemoteAddCmd.Arg("url", "URL of the remote cache server").Required().String()
+
+	cacheRemoteListCmd := cacheRemoteCmd.Command("list", "List remote cache servers")
+	cacheRemoteListCmdJSON := cacheRemoteListCmd.Flag("json", "Output in JSON format").Bool()
+
+	cacheRemoteRemoveCmd := cacheRemoteCmd.Command("remove", "Remove a remote cache server")
+	cacheRemoteRemoveCmdURL := cacheRemoteRemoveCmd.Arg("url", "URL of the remote cache server to remove").Required().String()
+
+	cacheListCmd := cacheCmd.Command("list", "List cache entries")
+	cacheListCmdJSON := cacheListCmd.Flag("json", "Output in JSON format").Bool()
+	// Global cache is the only cache now
+
+	// Config command removed
 
 	command, err := a.Parse(os.Args[1:])
 	if err != nil {
@@ -80,6 +112,12 @@ func Main() int {
 
 	cfg.JsonnetHome = filepath.Clean(cfg.JsonnetHome)
 
+	// Process global cache flag
+	pkg.GlobalCacheEnabled = !cfg.NoGlobalCache
+	
+	// Set GitQuiet using the thread-safe function
+	pkg.SetGitQuiet(cfg.Quiet)
+
 	switch command {
 	case initCmd.FullCommand():
 		return initCommand(workdir)
@@ -89,6 +127,23 @@ func Main() int {
 		return updateCommand(workdir, cfg.JsonnetHome, *updateCmdURIs)
 	case rewriteCmd.FullCommand():
 		return rewriteCommand(workdir, cfg.JsonnetHome)
+
+	// Cache commands with subcommands
+	case cacheStatusCmd.FullCommand():
+		return cacheStatusCommand(workdir, cfg.JsonnetHome)
+	// Clean command removed
+	case cacheFlushCmd.FullCommand():
+		return cacheFlushCommand(workdir, cfg.JsonnetHome)
+	case cacheRemoteAddCmd.FullCommand():
+		return cacheRemoteAddCommand(workdir, cfg.JsonnetHome, *cacheRemoteAddCmdURL)
+	case cacheRemoteListCmd.FullCommand():
+		return cacheRemoteListCommand(workdir, cfg.JsonnetHome, *cacheRemoteListCmdJSON)
+	case cacheRemoteRemoveCmd.FullCommand():
+		return cacheRemoteRemoveCommand(workdir, cfg.JsonnetHome, *cacheRemoteRemoveCmdURL)
+	case cacheListCmd.FullCommand():
+		return cacheListCommand(workdir, cfg.JsonnetHome, *cacheListCmdJSON)
+	// Config command removed
+
 	default:
 		installCommand(workdir, cfg.JsonnetHome, []string{}, false, "")
 	}

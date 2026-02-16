@@ -22,7 +22,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/fatih/color"
 	"github.com/pkg/errors"
@@ -52,7 +55,17 @@ var (
 func Ensure(direct v1.JsonnetFile, vendorDir string, oldLocks *deps.Ordered) (*deps.Ordered, error) {
 	// ensure all required files are in vendor
 	// This is the actual installation
-	locks, err := ensure(direct.Dependencies, vendorDir, "", oldLocks)
+	// Determine whether to use parallel downloads
+	var locks *deps.Ordered
+	var err error
+
+	useParallel := shouldUseParallelDownloads(direct.Dependencies)
+	if useParallel {
+		var locksSharedMutex sync.Mutex
+		locks, err = parallelEnsure(direct.Dependencies, vendorDir, "", oldLocks, &locksSharedMutex)
+	} else {
+		locks, err = ensure(direct.Dependencies, vendorDir, "", oldLocks)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -61,18 +74,10 @@ func Ensure(direct v1.JsonnetFile, vendorDir string, oldLocks *deps.Ordered) (*d
 	CleanLegacyName(locks)
 
 	// find unknown dirs in vendor/
-	names := []string{}
-	err = filepath.Walk(vendorDir, func(path string, i os.FileInfo, err error) error {
-		if path == vendorDir {
-			return nil
-		}
-		if !i.IsDir() {
-			return nil
-		}
-
-		names = append(names, path)
-		return nil
-	})
+	names, err := findUnknownDirectories(vendorDir)
+	if err != nil {
+		return nil, err
+	}
 
 	// remove them
 	for _, dir := range names {
@@ -165,10 +170,15 @@ func linkLegacy(vendorDir string, locks *deps.Ordered) error {
 			continue
 		}
 
+		// ensure parent directory exists
+		if err := os.MkdirAll(filepath.Dir(legacyName), os.ModePerm); err != nil {
+			return err
+		}
+
 		// create the symlink
 		if err := os.Symlink(
-			filepath.Join(pkgName),
-			filepath.Join(legacyName),
+			pkgName,
+			legacyName,
 		); err != nil {
 			return err
 		}
@@ -204,6 +214,7 @@ func checkLegacyNameTaken(legacyName string, pkgName string) (bool, error) {
 
 func known(deps *deps.Ordered, p string) bool {
 	p = filepath.ToSlash(p)
+
 	for _, kd := range deps.Keys() {
 		d, _ := deps.Get(kd)
 		k := filepath.ToSlash(d.Name())
@@ -381,4 +392,249 @@ func hashDir(dir string) string {
 	})
 
 	return base64.StdEncoding.EncodeToString(hasher.Sum(nil))
+}
+
+// shouldUseParallelDownloads determines if parallel downloads should be used
+// based on environment variables and the number of dependencies
+func shouldUseParallelDownloads(dependencies *deps.Ordered) bool {
+	// Check environment variable first
+	if envValue := os.Getenv("JB_PARALLEL_DOWNLOADS"); envValue != "" {
+		if parallel, err := strconv.ParseBool(envValue); err == nil {
+			return parallel
+		}
+	}
+
+	// Auto-enable parallel downloads for larger dependency sets
+	numDeps := len(dependencies.Keys())
+	numCPU := runtime.NumCPU()
+
+	// Use parallel downloads if:
+	// 1. We have more than 3 dependencies, OR
+	// 2. We have multiple CPU cores and more than 1 dependency
+	return numDeps > 3 || (numCPU > 1 && numDeps > 1)
+}
+
+// EnsureWithContext provides context-aware dependency management
+func EnsureWithContext(ctx context.Context, direct v1.JsonnetFile, vendorDir string, oldLocks *deps.Ordered) (*deps.Ordered, error) {
+	// Check for context cancellation early
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	// ensure all required files are in vendor with context support
+	var locks *deps.Ordered
+	var err error
+
+	useParallel := shouldUseParallelDownloads(direct.Dependencies)
+	if useParallel {
+		var locksSharedMutex sync.Mutex
+		locks, err = parallelEnsureWithContext(ctx, direct.Dependencies, vendorDir, "", oldLocks, &locksSharedMutex)
+	} else {
+		locks, err = ensureWithContext(ctx, direct.Dependencies, vendorDir, "", oldLocks)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Check for context cancellation before proceeding with cleanup
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	// remove unchanged legacyNames
+	CleanLegacyName(locks)
+
+	// find unknown dirs in vendor/
+	names, err := findUnknownDirectories(vendorDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// remove them
+	for _, dir := range names {
+		// Check for context cancellation during cleanup
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		name, err := filepath.Rel(vendorDir, dir)
+		if err != nil {
+			return nil, err
+		}
+		if !known(locks, name) {
+			if err := os.RemoveAll(dir); err != nil {
+				return nil, err
+			}
+			if !strings.HasPrefix(name, ".tmp") {
+				color.Magenta("CLEAN %s", dir)
+			}
+		}
+	}
+
+	// remove all symlinks, optionally adding known ones back later if wished
+	if err := cleanLegacySymlinks(vendorDir, locks); err != nil {
+		return nil, err
+	}
+	if !direct.LegacyImports {
+		return locks, nil
+	}
+	if err := linkLegacy(vendorDir, locks); err != nil {
+		return nil, err
+	}
+
+	// return the final lockfile contents
+	return locks, nil
+}
+
+// findUnknownDirectories finds directories in vendor that aren't known dependencies
+func findUnknownDirectories(vendorDir string) ([]string, error) {
+	var names []string
+	err := filepath.Walk(vendorDir, func(path string, i os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == vendorDir {
+			return nil
+		}
+		if !i.IsDir() {
+			return nil
+		}
+		names = append(names, path)
+		return nil
+	})
+	return names, err
+}
+
+// ensureWithContext is a context-aware version of ensure
+func ensureWithContext(ctx context.Context, direct *deps.Ordered, vendorDir, pathToParentModule string, locks *deps.Ordered) (*deps.Ordered, error) {
+	deps := deps.NewOrdered()
+
+	for _, k := range direct.Keys() {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		d, _ := direct.Get(k)
+		l, present := locks.Get(d.Name())
+
+		// already locked and the integrity is intact
+		if present {
+			d.Version = l.Version
+
+			if check(l, vendorDir) {
+				deps.Set(d.Name(), l)
+				continue
+			}
+		}
+		expectedSum := l.Sum
+
+		// either not present or not intact: download again
+		dir := filepath.Join(vendorDir, d.Name())
+		os.RemoveAll(dir)
+
+		locked, err := downloadWithContext(ctx, d, vendorDir, pathToParentModule)
+		if err != nil {
+			return nil, errors.Wrap(err, "downloading")
+		}
+		if expectedSum != "" && locked.Sum != expectedSum {
+			return nil, fmt.Errorf("checksum mismatch for %s. Expected %s but got %s", d.Name(), expectedSum, locked.Sum)
+		}
+		deps.Set(d.Name(), *locked)
+		// we settled on a new version, add it to the locks for recursion
+		locks.Set(d.Name(), *locked)
+	}
+
+	for _, k := range deps.Keys() {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		d, _ := deps.Get(k)
+		if d.Single {
+			// skip dependencies that explicitely don't want nested ones installed
+			continue
+		}
+
+		f, err := jsonnetfile.Load(filepath.Join(vendorDir, d.Name(), jsonnetfile.File))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+
+		absolutePath, err := filepath.EvalSymlinks(filepath.Join(vendorDir, d.Name()))
+		if err != nil {
+			return nil, err
+		}
+
+		nested, err := ensureWithContext(ctx, f.Dependencies, vendorDir, absolutePath, locks)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, k := range nested.Keys() {
+			d, _ := nested.Get(k)
+			if _, ok := deps.Get(d.Name()); !ok {
+				deps.Set(d.Name(), d)
+			}
+		}
+	}
+
+	return deps, nil
+}
+
+// downloadWithContext is a context-aware version of download
+func downloadWithContext(ctx context.Context, d deps.Dependency, vendorDir, pathToParentModule string) (*deps.Dependency, error) {
+	var p Interface
+	switch {
+	case d.Source.GitSource != nil:
+		p = NewGitPackage(d.Source.GitSource)
+	case d.Source.LocalSource != nil:
+		wd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get current working directory: %w", err)
+		}
+
+		// Resolve the relative path to the parent module. When a local
+		// dependency tree is resolved recursively, nested local dependencies
+		// with relative paths must be evaluated relative to their referencing
+		// jsonnetfile, rather than relative to the top-level jsonnetfile.
+		modulePath, err := filepath.Rel(wd, filepath.Join(pathToParentModule, d.Source.LocalSource.Directory))
+		if err != nil {
+			modulePath = d.Source.LocalSource.Directory
+		}
+
+		p = NewLocalPackage(&deps.Local{Directory: modulePath})
+	}
+
+	if p == nil {
+		return nil, errors.New("either git or local source is required")
+	}
+
+	version, err := p.Install(ctx, d.Name(), vendorDir, d.Version)
+	if err != nil {
+		return nil, err
+	}
+
+	var sum string
+	if d.Source.LocalSource == nil {
+		sum = hashDir(filepath.Join(vendorDir, d.Name()))
+	}
+
+	d.Version = version
+	d.Sum = sum
+	return &d, nil
 }

@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased / TBD
+
+### Performance Improvements
+
+- **[FEATURE]** Add concurrent processing for nested dependencies installation
+- **[ENHANCEMENT]** Add retry mechanism for downloading GitHub archives before falling back to git clone
+- **[BUGFIX]** Fix concurrency issue when JB_PARALLEL_DOWNLOADS=true was set
+- **[ENHANCEMENT]** Refactor the Install function for better maintainability
+
+### Advanced Caching System
+
+- **[FEATURE]** Add global caching system in `~/.cache/jb` to improve performance across projects
+- **[FEATURE]** Add cache metadata and indexing for improved organization and retrieval
+- **[FEATURE]** Add AWS S3 support for remote caches with full AWS SDK integration
+- **[FEATURE]** Implement concurrent cache checking using goroutines for significant performance improvements
+- **[FEATURE]** Implement hierarchical cache checking (global → remote) with parallel lookups
+- **[FEATURE]** Add cache statistics tracking for performance monitoring
+- **[BREAKING]** Remove local cache system in favor of global and remote caches
+- **[ENHANCEMENT]** Add new cache management commands with a modern subcommand structure:
+  - `jb cache status` - Display cache statistics and health
+  - `jb cache flush` - Empty the cache
+  - `jb cache add-remote` - Add a remote cache server
+  - `jb cache list-remote` - List remote cache servers
+  - `jb cache remove-remote` - Remove a remote cache server
+  - `jb cache list` - List all cache entries with metadata
+- **[ENHANCEMENT]** Add `--no-global-cache` flag to disable global caching
+- **[ENHANCEMENT]** Add `JB_CACHE_DIR` environment variable to customize global cache location
+
+### Build and CI Improvements
+
+- **[ENHANCEMENT]** Add arm64 support for macOS binary compilation
+- **[ENHANCEMENT]** Enable GitHub Actions for CI/CD
+- **[ENHANCEMENT]** Update to support only the latest Go release
+- **[ENHANCEMENT]** Ensure stable transitive dependencies
+- **[ENHANCEMENT]** Disable Windows build and ARM 32-bit for Darwin
+
 ## 0.5.1 / 2022-06-22
 
 - **[ENHANCEMENT]** Update dependencies and fix CI
@@ -19,7 +55,7 @@
 
 ## 0.4.0 / 2020-05-15
 
-You can now `jb update` a single dependency.  
+You can now `jb update` a single dependency.
 Run `jb update github.com/org/repo` (supports multiple at ones).
 
 #### Changes:
@@ -42,10 +78,10 @@ handle the old v0.2 format, v0.2 can't and must not be used with a
 
 - **[FEATURE] Absolute imports (#63)**: Introduces a new style for importing the
   packages installed by `jb`. The `<name>/<file>` style used before caused
-  issues, as it was neither unique nor clearly defined what to import.  
+  issues, as it was neither unique nor clearly defined what to import.
   To address this, `jb` will now create a directory structure that allows to use
-  import paths similar to Go: `host.tld/user/repo/subdir/file.libsonnet`.  
-  The old stlye is still supported, this change is backwards compatible.  
+  import paths similar to Go: `host.tld/user/repo/subdir/file.libsonnet`.
+  The old stlye is still supported, this change is backwards compatible.
   `jb rewrite` can be used to automatically convert your imports.
 - **[FEATURE] `jsonnetfile.json` versions (#85)**: Adds a `verison` key to
   `jsonnetfile.json`, so that `jb` can automatically recognize the schema
