@@ -435,27 +435,34 @@ func TestNestedTaskCollection(t *testing.T) {
 	tempDir := t.TempDir()
 	vendorDir := filepath.Join(tempDir, "vendor")
 
-	resultDeps := deps.NewOrdered()
-	resultDeps.Set("test-dep", deps.Dependency{
+	testDep := deps.Dependency{
 		Source: deps.Source{
 			LocalSource: &deps.Local{
 				Directory: "test-path",
 			},
 		},
-	})
-	resultDeps.Set("single-dep", deps.Dependency{
+	}
+	singleDep := deps.Dependency{
 		Single: true, // Should be skipped
 		Source: deps.Source{
 			LocalSource: &deps.Local{
 				Directory: "single-path",
 			},
 		},
-	})
+	}
+
+	direct := deps.NewOrdered()
+	direct.Set("test-dep", testDep)
+	direct.Set("single-dep", singleDep)
+
+	resultDeps := deps.NewOrdered()
+	resultDeps.Set("test-dep", testDep)
+	resultDeps.Set("single-dep", singleDep)
 
 	depsMutex := &sync.RWMutex{}
 	ctx := context.Background()
 
-	tasks := collectNestedTasks(ctx, resultDeps, depsMutex, vendorDir)
+	tasks := collectNestedTasksOrdered(ctx, direct, resultDeps, depsMutex, vendorDir)
 
 	// Should collect one task (single-dep should be skipped)
 	if len(tasks) != 1 {

@@ -46,10 +46,9 @@ func parallelEnsureWithContext(ctx context.Context, direct *deps.Ordered, vendor
 	// Configure concurrency limits based on available CPU cores
 	numCPU := runtime.NumCPU()
 	maxConcurrentDownloads := min(numCPU*2, 16) // Cap at 16 to avoid overwhelming network
-	maxConcurrentNested := min(numCPU, 8)       // Limit nested processing
 
 	// Create error collection with context cancellation
-	errorCh := make(chan error, maxConcurrentDownloads+maxConcurrentNested)
+	errorCh := make(chan error, maxConcurrentDownloads)
 	var firstErr error
 	var errOnce sync.Once
 
@@ -60,7 +59,10 @@ func parallelEnsureWithContext(ctx context.Context, direct *deps.Ordered, vendor
 	toDownload := make([]downloadTask, 0, len(direct.Keys()))
 	for _, k := range direct.Keys() {
 		d, _ := direct.Get(k)
+
+		locksSharedMutex.Lock()
 		l, present := locks.Get(d.Name())
+		locksSharedMutex.Unlock()
 
 		// Check if already locked and intact
 		if present {
@@ -129,10 +131,14 @@ func parallelEnsureWithContext(ctx context.Context, direct *deps.Ordered, vendor
 		return nil, firstErr
 	}
 
-	// Phase 2: Process nested dependencies concurrently
-	nestedTasks := collectNestedTasks(ctx, resultDeps, depsMutex, vendorDir)
-	if len(nestedTasks) > 0 {
-		if err := processNestedDependencies(ctx, nestedTasks, maxConcurrentNested, vendorDir, locks, locksSharedMutex, resultDeps, depsMutex); err != nil {
+	// Phase 2: Process nested dependencies sequentially in the original
+	// dependency order to preserve deterministic "first listed dependency
+	// wins" conflict resolution. When multiple direct deps share a transitive
+	// dep at different versions, the version from the first-listed direct dep
+	// must take precedence.
+	nestedTasks := collectNestedTasksOrdered(ctx, direct, resultDeps, depsMutex, vendorDir)
+	for _, task := range nestedTasks {
+		if err := processNestedTask(ctx, task, vendorDir, locks, locksSharedMutex, resultDeps, depsMutex); err != nil {
 			return nil, err
 		}
 	}
@@ -198,14 +204,12 @@ func processDownloadTask(ctx context.Context, task downloadTask, resultDeps *dep
 	return nil
 }
 
-// collectNestedTasks gathers all nested dependency tasks that need processing
-func collectNestedTasks(ctx context.Context, resultDeps *deps.Ordered, depsMutex *sync.RWMutex, vendorDir string) []nestedTask {
-	depsMutex.RLock()
-	keys := resultDeps.Keys()
-	depsMutex.RUnlock()
-
-	tasks := make([]nestedTask, 0, len(keys))
-	for _, k := range keys {
+// collectNestedTasksOrdered gathers nested dependency tasks in the original
+// direct dependency order. This ensures deterministic conflict resolution when
+// multiple direct deps share a transitive dep at different versions.
+func collectNestedTasksOrdered(ctx context.Context, direct *deps.Ordered, resultDeps *deps.Ordered, depsMutex *sync.RWMutex, vendorDir string) []nestedTask {
+	tasks := make([]nestedTask, 0, len(direct.Keys()))
+	for _, k := range direct.Keys() {
 		select {
 		case <-ctx.Done():
 			return tasks
@@ -217,7 +221,7 @@ func collectNestedTasks(ctx context.Context, resultDeps *deps.Ordered, depsMutex
 		depsMutex.RUnlock()
 
 		if !exists || d.Single {
-			continue // Skip dependencies that don't want nested ones
+			continue
 		}
 
 		vendorPath := filepath.Join(vendorDir, d.Name())
@@ -240,57 +244,6 @@ func resolveAbsolutePath(vendorPath string) string {
 		}
 	}
 	return vendorPath
-}
-
-// processNestedDependencies handles nested dependency processing with worker pools
-func processNestedDependencies(ctx context.Context, tasks []nestedTask, maxWorkers int, vendorDir string, locks *deps.Ordered, locksSharedMutex *sync.Mutex, resultDeps *deps.Ordered, depsMutex *sync.RWMutex) error {
-	taskCh := make(chan nestedTask, len(tasks))
-	for _, task := range tasks {
-		taskCh <- task
-	}
-	close(taskCh)
-
-	var wg sync.WaitGroup
-	errorCh := make(chan error, maxWorkers)
-
-	// Start worker goroutines
-	for i := 0; i < maxWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-ctx.Done():
-					errorCh <- ctx.Err()
-					return
-				case task, ok := <-taskCh:
-					if !ok {
-						return
-					}
-					if err := processNestedTask(ctx, task, vendorDir, locks, locksSharedMutex, resultDeps, depsMutex); err != nil {
-						errorCh <- err
-						return
-					}
-				}
-			}
-		}()
-	}
-
-	// Wait for completion
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return nil
-	case err := <-errorCh:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 }
 
 // processNestedTask handles a single nested dependency task
